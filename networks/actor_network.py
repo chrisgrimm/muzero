@@ -7,6 +7,7 @@ import jax.random as jrng
 
 EPS = 1e-6
 
+
 def embed(
         obs, # [84, 84, 4]
         config,
@@ -22,6 +23,10 @@ def embed(
         hk.Linear(config['embedding_size'])
     ])(obs)
 
+
+embed_t = hk.transform(embed)
+
+
 def dynamics(
         state,
         action,
@@ -35,6 +40,8 @@ def dynamics(
     ] * config['depth'])(sa)
 
 
+dynamics_t = hk.transform(dynamics)
+
 def reward(
         state,
         config
@@ -44,6 +51,8 @@ def reward(
         jax.nn.relu,
         hk.Linear(1)
     ])(state)[0]
+
+reward_t = hk.transform(reward)
 
 
 def value(
@@ -56,6 +65,7 @@ def value(
         hk.Linear(1)
     ])(state)[0]
 
+value_t = hk.transform(value)
 
 def policy(
         state,
@@ -68,19 +78,23 @@ def policy(
         jax.nn.softmax,
     ])(state)
 
+policy_t = hk.transform(policy)
+
 
 def rollout_model(
+        muzero_params,
         obs,
         actions,
         config,
 ):
-    s = embed(obs, config)
-
+    (embed_params, reward_params, value_params,
+     policy_params, dynamics_params) = muzero_params
+    s = embed_t.apply(embed_params, obs, config)
     def f(state, action):
-        r = reward(state, config)
-        v = value(state, config)
-        pi = policy(state, config)
-        next_state = dynamics(state, action, config)
+        r = reward_t.apply(reward_params, state, config)
+        v = value_t.apply(value_params, state, config)
+        pi = policy_t.apply(policy_params, state, config)
+        next_state = dynamics_t.apply(dynamics_params, state, action, config)
         return next_state, (r, v, pi)
 
     _, (r_traj, v_traj, pi_traj) = jax.lax.scan(f, s, actions)
@@ -96,6 +110,7 @@ def r_loss(
     chex.assert_shape(env_r_rollout, (config['model_rollout_length'] + config['environment_rollout_length'],))
     env_r_rollout = env_r_rollout[:config['model_rollout_length']]
     return jnp.sum((env_r_rollout - model_r_rollout)**2, axis=0)
+
 
 def v_loss(
         env_r_rollout, # [K + n]
@@ -121,6 +136,7 @@ def v_loss(
     v_loss, _ = jax.lax.scan(f, 0.0, np.arange(K))
 
     return v_loss
+
 
 def policy_loss(
         env_pi_rollout,
