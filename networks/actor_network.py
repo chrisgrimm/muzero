@@ -1,3 +1,6 @@
+from typing import NamedTuple, Callable, Mapping, Union
+import common
+
 import jax
 import chex
 import haiku as hk
@@ -10,7 +13,7 @@ EPS = 1e-6
 
 def embed(
         obs, # [84, 84, 4]
-        config,
+        config: common.Config,
 ):
     return hk.Sequential([
         hk.Conv2D(16, 8, 4, padding='VALID'),
@@ -22,9 +25,6 @@ def embed(
         hk.Flatten(),
         hk.Linear(config['embedding_size'])
     ])(obs)
-
-
-embed_t = hk.transform(embed)
 
 
 def dynamics(
@@ -40,8 +40,6 @@ def dynamics(
     ] * config['depth'])(sa)
 
 
-dynamics_t = hk.transform(dynamics)
-
 def reward(
         state,
         config
@@ -51,8 +49,6 @@ def reward(
         jax.nn.relu,
         hk.Linear(1)
     ])(state)[0]
-
-reward_t = hk.transform(reward)
 
 
 def value(
@@ -65,7 +61,6 @@ def value(
         hk.Linear(1)
     ])(state)[0]
 
-value_t = hk.transform(value)
 
 def policy(
         state,
@@ -78,23 +73,20 @@ def policy(
         jax.nn.softmax,
     ])(state)
 
-policy_t = hk.transform(policy)
-
 
 def rollout_model(
-        muzero_params,
+        muzero_agent: 'MuZeroAgent',
         obs,
         actions,
         config,
 ):
-    (embed_params, reward_params, value_params,
-     policy_params, dynamics_params) = muzero_params
-    s = embed_t.apply(embed_params, obs, config)
+    params = muzero_agent.params
+    s = muzero_agent.embed.apply(params.embed, obs, config)
     def f(state, action):
-        r = reward_t.apply(reward_params, state, config)
-        v = value_t.apply(value_params, state, config)
-        pi = policy_t.apply(policy_params, state, config)
-        next_state = dynamics_t.apply(dynamics_params, state, action, config)
+        r = muzero_agent.reward.apply(params.reward, state, config)
+        v = muzero_agent.value.apply(params.value, state, config)
+        pi = muzero_agent.policy.apply(params.policy, state, config)
+        next_state = muzero_agent.dynamics.apply(params.dynamics, state, action, config)
         return next_state, (r, v, pi)
 
     _, (r_traj, v_traj, pi_traj) = jax.lax.scan(f, s, actions)
@@ -151,3 +143,52 @@ def policy_loss(
     env_pi_rollout = env_pi_rollout[:K, :]
     cross_entropies = -jnp.sum(env_pi_rollout * jnp.log(model_pi_rollout + EPS), axis=1)
     return jnp.sum(cross_entropies, axis=0)
+
+
+class MuZeroParams(NamedTuple):
+    embed: jnp.ndarray
+    reward: jnp.ndarray
+    value: jnp.ndarray
+    policy: jnp.ndarray
+    dynamics: jnp.ndarray
+
+
+class MuZeroComponents(NamedTuple):
+    embed: Callable[[jnp.ndarray, common.Config], jnp.ndarray]
+    reward: Callable[[jnp.ndarray, common.Config], jnp.ndarray]
+    value: Callable[[jnp.ndarray, common.Config], jnp.ndarray]
+    policy: Callable[[jnp.ndarray, common.Config], jnp.ndarray]
+    dynamics: Callable[[jnp.ndarray, jnp.ndarray, common.Config], jnp.ndarray]
+
+
+class MuZeroAgent:
+
+    def __init__(
+            self,
+            key: jrng.PRNGKey,
+            components: MuZeroComponents,
+            config: common.Config,
+    ):
+        dummy_obs = np.zeros(config['obs_shape'], dtype=np.float32)
+        dummy_state = np.zeros(config['embedding_size'], dtype=np.float32)
+        dummy_action = 0
+
+        self.reward = hk.transform(components.reward)
+        self.embed = hk.transform(components.embed)
+        self.value = hk.transform(components.value)
+        self.policy = hk.transform(components.policy)
+        self.dynamics = hk.transform(components.dynamics)
+
+        key, *param_keys = jrng.split(key, 6)
+
+        self.params = MuZeroParams(
+            reward=self.reward.init(param_keys[0], dummy_state, config),
+            embed=self.embed.init(param_keys[1], dummy_obs, config),
+            value=self.value.init(param_keys[2], dummy_state, config),
+            policy=self.policy.init(param_keys[3], dummy_state, config),
+            dynamics=self.dynamics.init(param_keys[4], dummy_state, dummy_action, config)
+        )
+
+        self._key = key
+
+
