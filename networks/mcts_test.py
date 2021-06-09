@@ -1,7 +1,8 @@
 import common
-import jax_mcts
+import mcts
 import jax, jax.numpy as jnp, jax.random as jrng
 import numpy as np
+from pprint import pprint
 
 # dummy environment.
 # 3 states, tabular representation. fixed dynamics
@@ -35,10 +36,11 @@ def dummy_policy(x: jnp.ndarray, config: common.Config):
 
 def dummy_dynamics(x: jnp.ndarray, a: jnp.ndarray, config: common.Config):
     s_idx = jnp.argmax(x)
-    return jax.lax.cond(a == 0,
+    next_s_idx = jax.lax.cond(a == 0,
                         lambda _: jnp.argmax(P_a1[s_idx, :]),
                         lambda _: jnp.argmax(P_a2[s_idx, :]),
                         operand=None)
+    return jax.nn.one_hot(next_s_idx, 3)
 
 dummy_comp = actor_network.MuZeroComponents(
     embed=dummy_embed,
@@ -52,14 +54,31 @@ dummy_config = {
     'obs_shape': (1,),
     'embedding_size': 3,
     'num_actions': 2,
-    'num_simulations': 1,
+    'num_simulations': 3,
+    'gamma': 0.99,
 }
+
 key = jrng.PRNGKey(1234)
-key, *keys = jrng.split(key, 3)
-muzero_agent = actor_network.MuZeroAgent(keys[0], dummy_comp, dummy_config)
+key, *keys = jrng.split(key, 4)
+muzero = actor_network.MuZeroAgent(keys[0], dummy_comp, dummy_config)
+dummy_obs = jnp.array(0)
 
-mcts_params = jax_mcts.init_mcts_params(dummy_config)
 
-node_idx, action, path_indices, path_actions, not_leaf = jax_mcts.do_simulation(mcts_params, dummy_config)
-mcts_params = jax_mcts.expand_node(mcts_params, muzero_agent, keys[1], node_idx, action, dummy_config)
+mcts_params = mcts.init_mcts_params(muzero, keys[0], dummy_obs, dummy_config)
+rollout = mcts.rollout_to_leaf(mcts_params, dummy_config)
+mcts_params = mcts.expand_leaf(mcts_params, muzero, keys[1], rollout, dummy_config)
+mcts_params = mcts.backup(mcts_params, rollout, dummy_config)
 
+rollout2 = mcts.MCTSRollout(
+    nodes=jnp.array([0, 1, 1]),
+    actions=jnp.array([0, 0, 0]),
+    leaf_flags=jnp.array([1, 1, 0])
+)
+mcts_params = mcts.expand_leaf(mcts_params, muzero, keys[2], rollout2, dummy_config)
+mcts_params = mcts.backup(mcts_params, rollout2, dummy_config)
+
+
+
+
+#res = jax_mcts.run_mcts(dummy_obs, key, muzero, dummy_config)
+print()
