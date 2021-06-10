@@ -63,7 +63,7 @@ class ParallelTrajectoryRunner:
         self._muzero = muzero
         self._key = key
 
-    def get_traj(self) -> List[List[Experience]]:
+    def get_trajs(self) -> List[List[Experience]]:
         to_emit = []
         while not to_emit:
             self._key, key = jrng.split(self._key, 2)

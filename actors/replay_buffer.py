@@ -1,12 +1,14 @@
 import numpy as np
 import ray
 
-@ray.remote
 class ReplayBuffer:
     def __init__(self, replay_buffer_size):
         self.replay_buffer_size = replay_buffer_size
         self.buffer = {}
         self.game_id = 0
+
+    def __len__(self):
+        return len(self.buffer)
 
     def add(self, trajectory):
         self.buffer[self.game_id] = trajectory
