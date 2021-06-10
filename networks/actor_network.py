@@ -193,9 +193,8 @@ def policy_loss(
     K = config['model_rollout_length']
     n = config['env_rollout_length']
     A = config['num_actions']
-    chex.assert_shape(env_pi_rollout, (n + K, A))
+    chex.assert_shape(env_pi_rollout, (K, A))
     chex.assert_shape(model_pi_rollout, (K, A))
-    env_pi_rollout = env_pi_rollout[:K, :]
     cross_entropies = -jnp.sum(env_pi_rollout * jnp.log(model_pi_rollout + EPS), axis=1)
     return jnp.sum(cross_entropies, axis=0)
 
@@ -207,7 +206,6 @@ def muzero_loss(
         obs_traj: jnp.ndarray, # [K + n, *obs_size]
         a_traj: jnp.ndarray, # [K + n]
         r_traj: jnp.ndarray, # [K + n]
-        pi_traj: jnp.ndarray, # [K + n, num_actions]
         config: common.Config,
 ):
     muzero = MuZero(muzero_params, muzero_comps)
@@ -216,8 +214,11 @@ def muzero_loss(
     model_r_traj, model_v_traj, model_pi_traj = rollout_model(
         muzero, obs_traj[0], a_traj[:K], config)
     r_loss_term = r_loss(r_traj, model_r_traj, config)
-    v_bootstraps = jax.vmap(mcts.run_and_get_value, (None, None, 0, None), 0)(muzero, key, obs_traj[n:], config)
-    v_loss_term = v_loss(r_traj, v_bootstraps, model_v_traj, config)
+
+    v_mcts = jax.vmap(mcts.run_and_get_value, (None, None, 0, None), 0)(muzero, key, obs_traj[n:], config)
+    v_loss_term = v_loss(r_traj, v_mcts, model_v_traj, config)
+
+    pi_traj = jax.vmap(mcts.run_and_get_policy, (None, None, 0, None), 0)(muzero, key, obs_traj[:K], config)
     pi_loss_term = policy_loss(pi_traj, model_pi_traj, config)
 
     loss = r_loss_term + v_loss_term + pi_loss_term
@@ -232,13 +233,12 @@ def train_muzero(
         obs_traj: jnp.ndarray,  # [B, K + n, *obs_size]
         a_traj: jnp.ndarray,  # [B, K + n]
         r_traj: jnp.ndarray,  # [B, K + n]
-        pi_traj: jnp.ndarray,  # [B, K + n, num_actions]
         config: common.Config,
 ):
-    batched_loss = jax.vmap(muzero_loss, (None, None, None, 0, 0, 0, 0, None))
-    batched_loss = lambda params, comp, key, obs, a, r, pi, config: jnp.mean(batched_loss(params, comp, key, obs, a, r, pi, config), axis=0)
+    batched_loss = jax.vmap(muzero_loss, (None, None, None, 0, 0, 0, None))
+    batched_loss = lambda params, comp, key, obs, a, r, config: jnp.mean(batched_loss(params, comp, key, obs, a, r, config), axis=0)
     loss, grads = jax.value_and_grad(batched_loss)(
-        muzero.params, muzero.comps, key, obs_traj, a_traj, r_traj, pi_traj, config)
+        muzero.params, muzero.comps, key, obs_traj, a_traj, r_traj, config)
     updates, opt_state = optimizer.update(grads, opt_state, muzero.params)
     muzero = muzero._replace(params=optax.apply_updates(muzero.params, updates))
     return loss, opt_state, muzero

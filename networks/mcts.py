@@ -232,6 +232,17 @@ def sample_action(
     return jrng.choice(sample_key, config['num_actions'], p=policy)
 
 
+def run_and_get_policy(
+        muzero: MuZero,
+        key: jrng.PRNGKey,
+        obs: jnp.ndarray,
+        config: common.Config
+) -> jnp.ndarray:
+    mcts_key, sample_key = jrng.split(key, 2)
+    mcts_params = run_mcts(obs, mcts_key, muzero, config)
+    return get_policy(mcts_params)
+
+
 def run_and_get_value(
         muzero: MuZero,
         key: jrng.PRNGKey,

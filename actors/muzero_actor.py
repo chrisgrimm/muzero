@@ -22,7 +22,7 @@ def make_parallel_muzero_actor(
             key: jrng.PRNGKey,
             obs: jnp.ndarray
     ):
-        batch_sample = jax.vmap(mcts.sample_action, (None, None, 0, None), 0)
+        batch_sample = jax.vmap(mcts.get_policy, (None, None, 0, None), 0)
         return batch_sample(muzero, key, obs, config)
 
     act = jax.jit(act)
