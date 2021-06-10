@@ -20,7 +20,8 @@ def make_parallel_muzero_actor(
     def act(
             muzero: MuZeroAgent,
             key: jrng.PRNGKey,
-            obs: jnp.ndarray):
+            obs: jnp.ndarray
+    ):
         batch_sample = jax.vmap(mcts.sample_action, (None, None, 0, None), 0)
         return batch_sample(muzero, key, obs, config)
 
@@ -63,18 +64,19 @@ class ParallelTrajectoryRunner:
         self._key = key
 
     def get_traj(self) -> List[List[Experience]]:
-        self._key, key = jrng.split(self._key, 2)
-        a_vec = self._actor(self._muzero, key, self._obs_vec)
-        next_obs_vec, reward_vec, done_vec, _ = self._env.step(a_vec)
-        grouped = enumerate(zip(self._obs_vec, a_vec, reward_vec, next_obs_vec, done_vec))
         to_emit = []
-        for i, (obs, a, reward, next_obs, done) in grouped:
-            exp = Experience(obs, a, reward, next_obs)
-            self._trajectories[i].append(exp)
-            if done:
-                to_emit.append(self._trajectories[i])
-                self._trajectories[i] = []
-        self._obs_vec = next_obs_vec
+        while not to_emit:
+            self._key, key = jrng.split(self._key, 2)
+            a_vec = self._actor(self._muzero, key, self._obs_vec)
+            next_obs_vec, reward_vec, done_vec, _ = self._env.step(a_vec)
+            grouped = enumerate(zip(self._obs_vec, a_vec, reward_vec, next_obs_vec, done_vec))
+            for i, (obs, a, reward, next_obs, done) in grouped:
+                exp = Experience(obs, a, reward, next_obs)
+                self._trajectories[i].append(exp)
+                if done:
+                    to_emit.append(self._trajectories[i])
+                    self._trajectories[i] = []
+            self._obs_vec = next_obs_vec
         return to_emit
 
     def update_agent(
