@@ -5,7 +5,6 @@ import jax.random as jrng
 import numpy as np
 import common
 
-from networks import actor_network
 from typing import NamedTuple
 
 from networks.actor_network import MuZeroParams, MuZeroAgent
@@ -109,10 +108,7 @@ def rollout_to_leaf(
         actions=path_actions,
         leaf_flags=not_leaf
     )
-    # path_indices = path_indices[not_leaf == 1]
-    # path_actions = path_actions[not_leaf == 1]
 
-    # query model to expand node.
 
 def expand_leaf(
         mcts_params: MCTSParams,
@@ -160,14 +156,13 @@ def backup(
 ) -> MCTSParams:
     num_sim = config['num_simulations']
     gamma = config['gamma']
+
     last_index = jnp.argmax(jnp.arange(num_sim) * rollout.leaf_flags)
+    not_leaf = rollout.leaf_flags == 1
+    not_leaf_2d = not_leaf[None, :] & not_leaf[:, None]
 
     expanded_idx = mcts_params.transitions[rollout.nodes[last_index], rollout.actions[last_index]]
-
-    traj_rewards = jax.lax.map(lambda sa: mcts_params.R[sa[0], sa[1]], (rollout.nodes, rollout.actions))
-    traj_rewards = jnp.where(rollout.leaf_flags == 1, traj_rewards, 0)
-
-    not_leaf_2d = (rollout.leaf_flags == 1)[None, :] & (rollout.leaf_flags == 1)[:, None]
+    traj_rewards = jnp.where(not_leaf, mcts_params.R[rollout.nodes, rollout.actions], 0)
 
     gamma_mat = jnp.array(make_gamma_mat(gamma, num_sim))
     gamma_mat = jnp.where(not_leaf_2d, gamma_mat, 0)
@@ -184,8 +179,8 @@ def backup(
     g = discounted_returns + discounted_values
 
     sel_n, sel_q = mcts_params.N[rollout.nodes, rollout.actions], mcts_params.Q[rollout.nodes, rollout.actions]
-    q_update = jnp.where(rollout.leaf_flags == 1, (sel_n * sel_q + g) / (sel_n + 1), sel_q)
-    n_update = jnp.where(rollout.leaf_flags == 1, sel_n + 1, sel_n)
+    q_update = jnp.where(not_leaf, (sel_n * sel_q + g) / (sel_n + 1), sel_q)
+    n_update = jnp.where(not_leaf, sel_n + 1, sel_n)
     return mcts_params._replace(
         N=jax.ops.index_update(mcts_params.N, jax.ops.index[rollout.nodes, rollout.actions], n_update),
         Q=jax.ops.index_update(mcts_params.Q, jax.ops.index[rollout.nodes, rollout.actions], q_update)
@@ -213,15 +208,19 @@ def run_mcts(
     return mcts_params
 
 
+def get_policy(
+        mcts_params: MCTSParams,
+) -> jnp.ndarray:
+    return mcts_params.N[0, :] / jnp.sum(mcts_params.N[0, :], axis=0)
 
 
-
-
-
-
-
-
-
-
-
-
+def sample_action(
+        muzero: MuZeroAgent,
+        key: jrng.PRNGKey,
+        obs: jnp.ndarray,
+        config: common.Config
+) -> jnp.ndarray:
+    mcts_key, sample_key = jrng.split(key, 2)
+    mcts_params = run_mcts(obs, mcts_key, muzero, config)
+    policy = get_policy(mcts_params)
+    return jrng.choice(sample_key, config['num_actions'], p=policy)

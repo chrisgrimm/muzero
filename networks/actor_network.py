@@ -188,7 +188,3 @@ class MuZeroAgent:
             policy=self.policy.init(param_keys[3], dummy_state, config),
             dynamics=self.dynamics.init(param_keys[4], dummy_state, dummy_action, config)
         )
-
-        self._key = key
-
-

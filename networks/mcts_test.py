@@ -76,9 +76,3 @@ rollout2 = mcts.MCTSRollout(
 )
 mcts_params = mcts.expand_leaf(mcts_params, muzero, keys[2], rollout2, dummy_config)
 mcts_params = mcts.backup(mcts_params, rollout2, dummy_config)
-
-
-
-
-#res = jax_mcts.run_mcts(dummy_obs, key, muzero, dummy_config)
-print()
