@@ -1,4 +1,4 @@
-from typing import NamedTuple, Callable, Mapping, Union
+from typing import NamedTuple, Callable, Mapping, Union, Tuple
 import common
 
 import jax
@@ -7,8 +7,64 @@ import haiku as hk
 import jax.numpy as jnp
 import numpy as np
 import jax.random as jrng
+import optax
+
+from networks import mcts
 
 EPS = 1e-6
+
+class MuZeroParams(NamedTuple):
+    embed: jnp.ndarray
+    reward: jnp.ndarray
+    value: jnp.ndarray
+    policy: jnp.ndarray
+    dynamics: jnp.ndarray
+
+
+class MuZeroComponents(NamedTuple):
+    embed: hk.Transformed
+    reward: hk.Transformed
+    value: hk.Transformed
+    policy: hk.Transformed
+    dynamics: hk.Transformed
+
+class MuZero(NamedTuple):
+    params: MuZeroParams
+    comps: MuZeroComponents
+
+
+def init_muzero(
+        key: jrng.PRNGKey,
+        embed: Callable[[jnp.ndarray], jnp.ndarray],
+        reward: Callable[[jnp.ndarray], jnp.ndarray],
+        value: Callable[[jnp.ndarray], jnp.ndarray],
+        policy: Callable[[jnp.ndarray], jnp.ndarray],
+        dynamics: Callable[[jnp.ndarray, jnp.ndarray], jnp.ndarray],
+        config: common.Config,
+) -> MuZero:
+    dummy_obs = jnp.zeros(config['obs_shape'], dtype=jnp.float32)
+    dummy_action = jnp.array(0, dtype=jnp.int32)
+    dummy_state = jnp.zeros([config['embedding_size']], dtype=jnp.float32)
+
+    key, *new_keys = jrng.split(key, 6)
+
+    comps = MuZeroComponents(
+        embed=hk.transform(embed),
+        reward=hk.transform(reward),
+        value=hk.transform(value),
+        policy=hk.transform(policy),
+        dynamics=hk.transform(dynamics)
+    )
+
+    params = MuZeroParams(
+        embed=comps.embed.init(new_keys[0], dummy_obs, config),
+        reward=comps.reward.init(new_keys[1], dummy_state, config),
+        value=comps.value.init(new_keys[2], dummy_state, config),
+        policy=comps.value.init(new_keys[3], dummy_state, config),
+        dynamics=comps.value.init(new_keys[4], dummy_state, dummy_action, config)
+    )
+
+    return MuZero(params=params, comps=comps)
 
 
 def embed(
@@ -75,18 +131,17 @@ def policy(
 
 
 def rollout_model(
-        muzero_agent: 'MuZeroAgent',
+        muzero: 'MuZero',
         obs,
         actions,
         config,
 ):
-    params = muzero_agent.params
-    s = muzero_agent.embed.apply(params.embed, obs, config)
+    s = muzero.comps.embed.apply(muzero.params.embed, obs, config)
     def f(state, action):
-        r = muzero_agent.reward.apply(params.reward, state, config)
-        v = muzero_agent.value.apply(params.value, state, config)
-        pi = muzero_agent.policy.apply(params.policy, state, config)
-        next_state = muzero_agent.dynamics.apply(params.dynamics, state, action, config)
+        r = muzero.comps.reward.apply(muzero.params.reward, state, config)
+        v = muzero.comps.value.apply(muzero.params.value, state, config)
+        pi = muzero.comps.policy.apply(muzero.params.policy, state, config)
+        next_state = muzero.comps.dynamics.apply(muzero.params.dynamics, state, action, config)
         return next_state, (r, v, pi)
 
     _, (r_traj, v_traj, pi_traj) = jax.lax.scan(f, s, actions)
@@ -145,46 +200,45 @@ def policy_loss(
     return jnp.sum(cross_entropies, axis=0)
 
 
-class MuZeroParams(NamedTuple):
-    embed: jnp.ndarray
-    reward: jnp.ndarray
-    value: jnp.ndarray
-    policy: jnp.ndarray
-    dynamics: jnp.ndarray
+def muzero_loss(
+        muzero_params: MuZeroParams,
+        muzero_comps: MuZeroComponents,
+        key: jrng.PRNGKey,
+        obs_traj: jnp.ndarray, # [K + n, *obs_size]
+        a_traj: jnp.ndarray, # [K + n]
+        r_traj: jnp.ndarray, # [K + n]
+        pi_traj: jnp.ndarray, # [K + n, num_actions]
+        config: common.Config,
+):
+    muzero = MuZero(muzero_params, muzero_comps)
+    n, K = config['environment_rollout_length'], config['model_rollout_length']
+    # each is [K, ...]
+    model_r_traj, model_v_traj, model_pi_traj = rollout_model(
+        muzero, obs_traj[0], a_traj[:K], config)
+    r_loss_term = r_loss(r_traj, model_r_traj, config)
+    v_bootstraps = jax.vmap(mcts.run_and_get_value, (None, None, 0, None), 0)(muzero, key, obs_traj[n:], config)
+    v_loss_term = v_loss(r_traj, v_bootstraps, model_v_traj, config)
+    pi_loss_term = policy_loss(pi_traj, model_pi_traj, config)
+
+    loss = r_loss_term + v_loss_term + pi_loss_term
+    return loss
 
 
-class MuZeroComponents(NamedTuple):
-    embed: Callable[[jnp.ndarray, common.Config], jnp.ndarray]
-    reward: Callable[[jnp.ndarray, common.Config], jnp.ndarray]
-    value: Callable[[jnp.ndarray, common.Config], jnp.ndarray]
-    policy: Callable[[jnp.ndarray, common.Config], jnp.ndarray]
-    dynamics: Callable[[jnp.ndarray, jnp.ndarray, common.Config], jnp.ndarray]
-
-
-class MuZeroAgent:
-
-    def __init__(
-            self,
-            key: jrng.PRNGKey,
-            components: MuZeroComponents,
-            config: common.Config,
-    ):
-        dummy_obs = np.zeros(config['obs_shape'], dtype=np.float32)
-        dummy_state = np.zeros(config['embedding_size'], dtype=np.float32)
-        dummy_action = 0
-
-        self.reward = hk.transform(components.reward)
-        self.embed = hk.transform(components.embed)
-        self.value = hk.transform(components.value)
-        self.policy = hk.transform(components.policy)
-        self.dynamics = hk.transform(components.dynamics)
-
-        key, *param_keys = jrng.split(key, 6)
-
-        self.params = MuZeroParams(
-            reward=self.reward.init(param_keys[0], dummy_state, config),
-            embed=self.embed.init(param_keys[1], dummy_obs, config),
-            value=self.value.init(param_keys[2], dummy_state, config),
-            policy=self.policy.init(param_keys[3], dummy_state, config),
-            dynamics=self.dynamics.init(param_keys[4], dummy_state, dummy_action, config)
-        )
+def train_muzero(
+        muzero: MuZero,
+        opt_state,
+        optimizer,
+        key: jrng.PRNGKey,
+        obs_traj: jnp.ndarray,  # [B, K + n, *obs_size]
+        a_traj: jnp.ndarray,  # [B, K + n]
+        r_traj: jnp.ndarray,  # [B, K + n]
+        pi_traj: jnp.ndarray,  # [B, K + n, num_actions]
+        config: common.Config,
+):
+    batched_loss = jax.vmap(muzero_loss, (None, None, None, 0, 0, 0, 0, None))
+    batched_loss = lambda params, comp, key, obs, a, r, pi, config: jnp.mean(batched_loss(params, comp, key, obs, a, r, pi, config), axis=0)
+    loss, grads = jax.value_and_grad(batched_loss)(
+        muzero.params, muzero.comps, key, obs_traj, a_traj, r_traj, pi_traj, config)
+    updates, opt_state = optimizer.update(grads, opt_state, muzero.params)
+    muzero = muzero._replace(params=optax.apply_updates(muzero.params, updates))
+    return loss, opt_state, muzero

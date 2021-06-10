@@ -60,7 +60,7 @@ dummy_config = {
 
 key = jrng.PRNGKey(1234)
 key, *keys = jrng.split(key, 4)
-muzero = actor_network.MuZeroAgent(keys[0], dummy_comp, dummy_config)
+muzero = actor_network.MuZero(keys[0], dummy_comp, dummy_config)
 dummy_obs = jnp.array(0)
 
 

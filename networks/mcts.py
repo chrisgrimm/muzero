@@ -7,7 +7,7 @@ import common
 
 from typing import NamedTuple
 
-from networks.actor_network import MuZeroParams, MuZeroAgent
+from networks.actor_network import MuZeroParams, MuZero
 
 
 class MCTSParams(NamedTuple):
@@ -28,14 +28,14 @@ class MCTSRollout(NamedTuple):
 
 
 def init_mcts_params(
-        muzero_agent: MuZeroAgent,
+        muzero: MuZero,
         key: jrng.PRNGKey,
         obs: jnp.ndarray,
         config: common.Config
 ) -> MCTSParams:
     key, *keys = jrng.split(key, 2)
     c = config
-    s = muzero_agent.embed.apply(muzero_agent.params.embed, keys[0], obs, config)
+    s = muzero.comps.embed.apply(muzero.params.embed, keys[0], obs, config)
     base_params = MCTSParams(
         node_num=0,
         transitions=(-1 * jnp.ones((c['num_simulations'], c['num_actions']), dtype=jnp.int32)),
@@ -112,7 +112,7 @@ def rollout_to_leaf(
 
 def expand_leaf(
         mcts_params: MCTSParams,
-        muzero: MuZeroAgent,
+        muzero: MuZero,
         key: jrng.PRNGKey,
         rollout: MCTSRollout,
         config: common.Config
@@ -122,10 +122,10 @@ def expand_leaf(
     embedding = mcts_params.embeddings[node_idx]
 
     key, *keys = jrng.split(key, 5)
-    next_embedding = muzero.dynamics.apply(muzero.params.dynamics, keys[0], embedding, action, config)
-    reward = muzero.reward.apply(muzero.params.reward, keys[1], next_embedding, config)
-    value = muzero.value.apply(muzero.params.value, keys[2], next_embedding, config)
-    policy = muzero.policy.apply(muzero.params.policy, keys[3], next_embedding, config)
+    next_embedding = muzero.comps.dynamics.apply(muzero.params.dynamics, keys[0], embedding, action, config)
+    reward = muzero.comps.reward.apply(muzero.params.reward, keys[1], next_embedding, config)
+    value = muzero.comps.value.apply(muzero.params.value, keys[2], next_embedding, config)
+    policy = muzero.comps.policy.apply(muzero.params.policy, keys[3], next_embedding, config)
 
     expanded_idx = mcts_params.node_num + 1
     mcts_params = mcts_params._replace(
@@ -190,7 +190,7 @@ def backup(
 def run_mcts(
         obs: jnp.ndarray,
         key: jrng.PRNGKey,
-        muzero: MuZeroAgent,
+        muzero: MuZero,
         config: common.Config,
 ) -> MCTSParams:
 
@@ -214,8 +214,14 @@ def get_policy(
     return mcts_params.N[0, :] / jnp.sum(mcts_params.N[0, :], axis=0)
 
 
+def get_value(
+        mcts_params: MCTSParams,
+) -> jnp.ndarray:
+    return jnp.max(mcts_params.Q[0, :], axis=0)
+
+
 def sample_action(
-        muzero: MuZeroAgent,
+        muzero: MuZero,
         key: jrng.PRNGKey,
         obs: jnp.ndarray,
         config: common.Config
@@ -224,3 +230,14 @@ def sample_action(
     mcts_params = run_mcts(obs, mcts_key, muzero, config)
     policy = get_policy(mcts_params)
     return jrng.choice(sample_key, config['num_actions'], p=policy)
+
+
+def run_and_get_value(
+        muzero: MuZero,
+        key: jrng.PRNGKey,
+        obs: jnp.ndarray,
+        config: common.Config
+) -> jnp.ndarray:
+    mcts_key, sample_key = jrng.split(key, 2)
+    mcts_params = run_mcts(obs, mcts_key, muzero, config)
+    return get_value(mcts_params)

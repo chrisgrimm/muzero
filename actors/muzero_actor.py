@@ -10,7 +10,7 @@ import ray
 
 import common
 from networks import mcts
-from networks.actor_network import MuZeroAgent
+from networks.actor_network import MuZero
 from environments.vec_env.subproc_vec_env import SubprocVecEnv
 
 
@@ -18,7 +18,7 @@ def make_parallel_muzero_actor(
         config: common.Config,
 ):
     def act(
-            muzero: MuZeroAgent,
+            muzero: MuZero,
             key: jrng.PRNGKey,
             obs: jnp.ndarray
     ):
@@ -28,7 +28,7 @@ def make_parallel_muzero_actor(
     act = jax.jit(act)
 
     def wrapped(
-            muzero: MuZeroAgent,
+            muzero: MuZero,
             key: jrng.PRNGKey,
             obs: np.ndarray,
     ):
@@ -51,7 +51,7 @@ class ParallelTrajectoryRunner:
             self,
             num_parallel: int,
             env_fn: Callable[[], gym.Env],
-            muzero: MuZeroAgent,
+            muzero: MuZero,
             key: jrng.PRNGKey,
             config: common.Config,
     ):
@@ -81,6 +81,6 @@ class ParallelTrajectoryRunner:
 
     def update_agent(
             self,
-            muzero: MuZeroAgent
+            muzero: MuZero
     ) -> None:
         self._muzero = muzero
