@@ -7,7 +7,7 @@ import common
 
 from typing import NamedTuple
 
-from networks.actor_network import MuZeroParams, MuZero
+from networks.muzero import MuZero
 
 
 class MCTSParams(NamedTuple):
@@ -24,7 +24,7 @@ class MCTSParams(NamedTuple):
 class MCTSRollout(NamedTuple):
     nodes: jnp.ndarray
     actions: jnp.ndarray
-    leaf_flags: jnp.ndarray
+    valid: jnp.ndarray
 
 
 def init_mcts_params(
@@ -59,12 +59,12 @@ def next_state(
     return mcts_params.transitions[node_idx, action]
 
 
-def is_leaf_node(
+def is_valid_node(
         mcts_params: MCTSParams,
         node_idx: int,
         action: int
 ):
-    return (mcts_params.transitions[node_idx, action] == -1).astype(jnp.float32)
+    return mcts_params.transitions[node_idx, action] != -1
 
 
 def pick_action(
@@ -73,12 +73,10 @@ def pick_action(
         c1: float = 1.25,
         c2: float = 19_652
 ):
-    s = node_idx
-    Q, P, N = mcts_params.Q, mcts_params.P, mcts_params.N
-    term1 = jnp.sqrt(jnp.sum(N[s, :], axis=0, keepdims=True)) / (1 + N[s, :])
-    term2 = (jnp.sum(N[s, :], axis=0) + c2 + 1) / c2
+    term1 = jnp.sqrt(jnp.sum(mcts_params.N[node_idx, :], axis=0, keepdims=True)) / (1 + mcts_params.N[node_idx, :])
+    term2 = (jnp.sum(mcts_params.N[node_idx, :], axis=0) + c2 + 1) / c2
     term2 = c1 + jnp.log(term2)
-    max_term = Q[node_idx, :] + P[node_idx, :] * term1 * term2
+    max_term = mcts_params.Q[node_idx, :] + mcts_params.P[node_idx, :] * term1 * term2
     return jnp.argmax(max_term, axis=0)
 
 
@@ -89,24 +87,25 @@ def rollout_to_leaf(
     # check if state is leaf.
 
     def mcts_rollout(x, i):
-        node_idx, action, is_not_leaf = x
-        # log the output regardless of leaf status.
-        out = node_idx, action, is_not_leaf
-        is_not_leaf = (1 - is_leaf_node(mcts_params, node_idx, action)) * is_not_leaf
+        node_idx, action, is_valid = x
+
+        # log the output regardless of validity.
+        out = node_idx, action, is_valid
+        is_valid = is_valid & is_valid_node(mcts_params, node_idx, action)
 
         # come up with new state and action.
         next_node_idx = next_state(mcts_params, node_idx, action)
-        next_node_idx = (is_not_leaf * next_node_idx + (1 - is_not_leaf) * node_idx).astype(jnp.int32)
-        next_action = (is_not_leaf * pick_action(mcts_params, next_node_idx) + (1 - is_not_leaf)).astype(jnp.int32)
-        return (next_node_idx, next_action, is_not_leaf), out
+        next_action = pick_action(mcts_params, next_node_idx)
+
+        return (next_node_idx, next_action, is_valid), out
 
     node_idx, action = 0, pick_action(mcts_params, 0)
-    _, (path_indices, path_actions, not_leaf) = jax.lax.scan(
-        mcts_rollout, (node_idx, action, 1.0), jnp.arange(config['num_simulations']))
+    _, (path_indices, path_actions, is_valid) = jax.lax.scan(
+        mcts_rollout, (node_idx, action, True), jnp.arange(config['num_simulations']))
     return MCTSRollout(
         nodes=path_indices,
         actions=path_actions,
-        leaf_flags=not_leaf
+        valid=is_valid
     )
 
 
@@ -117,7 +116,7 @@ def expand_leaf(
         rollout: MCTSRollout,
         config: common.Config
 ) -> MCTSParams:
-    last_index = jnp.argmax(jnp.arange(config['num_simulations']) * rollout.leaf_flags)
+    last_index = jnp.argmax(jnp.where(rollout.valid, jnp.arange(config['num_simulations']), 0))
     node_idx, action = rollout.nodes[last_index], rollout.actions[last_index]
     embedding = mcts_params.embeddings[node_idx]
 
@@ -157,20 +156,20 @@ def backup(
     num_sim = config['num_simulations']
     gamma = config['gamma']
 
-    last_index = jnp.argmax(jnp.arange(num_sim) * rollout.leaf_flags)
-    not_leaf = rollout.leaf_flags == 1
-    not_leaf_2d = not_leaf[None, :] & not_leaf[:, None]
+    last_index = jnp.argmax(jnp.where(rollout.valid, jnp.arange(config['num_simulations']), 0))
+    valid = rollout.valid
+    valid_2d = valid[None, :] & valid[:, None]
 
     expanded_idx = mcts_params.transitions[rollout.nodes[last_index], rollout.actions[last_index]]
-    traj_rewards = jnp.where(not_leaf, mcts_params.R[rollout.nodes, rollout.actions], 0)
+    traj_rewards = jnp.where(valid, mcts_params.R[rollout.nodes, rollout.actions], 0)
 
     gamma_mat = jnp.array(make_gamma_mat(gamma, num_sim))
-    gamma_mat = jnp.where(not_leaf_2d, gamma_mat, 0)
+    gamma_mat = jnp.where(valid_2d, gamma_mat, 0)
 
     discounted_returns = jnp.sum(traj_rewards[None, :] * gamma_mat, axis=1)
 
     ones_mat = jnp.array(make_gamma_mat(1, num_sim))
-    ones_mat = jnp.where(not_leaf_2d, ones_mat, 0)
+    ones_mat = jnp.where(valid_2d, ones_mat, 0)
     gamma_powers = jnp.sum(ones_mat, axis=1)
     value_discounts = jnp.where(gamma_powers > 0, gamma ** gamma_powers, 0)
 
@@ -179,8 +178,8 @@ def backup(
     g = discounted_returns + discounted_values
 
     sel_n, sel_q = mcts_params.N[rollout.nodes, rollout.actions], mcts_params.Q[rollout.nodes, rollout.actions]
-    q_update = jnp.where(not_leaf, (sel_n * sel_q + g) / (sel_n + 1), sel_q)
-    n_update = jnp.where(not_leaf, sel_n + 1, sel_n)
+    q_update = jnp.where(valid, (sel_n * sel_q + g) / (sel_n + 1), sel_q)
+    n_update = jnp.where(valid, sel_n + 1, sel_n)
     return mcts_params._replace(
         N=jax.ops.index_update(mcts_params.N, jax.ops.index[rollout.nodes, rollout.actions], n_update),
         Q=jax.ops.index_update(mcts_params.Q, jax.ops.index[rollout.nodes, rollout.actions], q_update)

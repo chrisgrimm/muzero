@@ -7,6 +7,7 @@ from pprint import pprint
 # dummy environment.
 # 3 states, tabular representation. fixed dynamics
 from networks import actor_network
+from muzero import init_muzero
 
 P_a1 = jnp.array([[0, 1, 0],
                  [0, 0, 1],
@@ -42,13 +43,7 @@ def dummy_dynamics(x: jnp.ndarray, a: jnp.ndarray, config: common.Config):
                         operand=None)
     return jax.nn.one_hot(next_s_idx, 3)
 
-dummy_comp = actor_network.MuZeroComponents(
-    embed=dummy_embed,
-    reward=dummy_reward,
-    value=dummy_value,
-    policy=dummy_policy,
-    dynamics=dummy_dynamics
-)
+
 
 dummy_config = {
     'obs_shape': (1,),
@@ -60,9 +55,18 @@ dummy_config = {
 
 key = jrng.PRNGKey(1234)
 key, *keys = jrng.split(key, 4)
-muzero = actor_network.MuZero(keys[0], dummy_comp, dummy_config)
-dummy_obs = jnp.array(0)
 
+muzero = init_muzero(
+    key=key,
+    embed=dummy_embed,
+    reward=dummy_reward,
+    value=dummy_value,
+    policy=dummy_policy,
+    dynamics=dummy_dynamics,
+    config=dummy_config,
+)
+
+dummy_obs = jnp.array(0)
 
 mcts_params = mcts.init_mcts_params(muzero, keys[0], dummy_obs, dummy_config)
 rollout = mcts.rollout_to_leaf(mcts_params, dummy_config)
@@ -72,7 +76,7 @@ mcts_params = mcts.backup(mcts_params, rollout, dummy_config)
 rollout2 = mcts.MCTSRollout(
     nodes=jnp.array([0, 1, 1]),
     actions=jnp.array([0, 0, 0]),
-    leaf_flags=jnp.array([1, 1, 0])
+    valid=jnp.array([True, True, False])
 )
 mcts_params = mcts.expand_leaf(mcts_params, muzero, keys[2], rollout2, dummy_config)
 mcts_params = mcts.backup(mcts_params, rollout2, dummy_config)
