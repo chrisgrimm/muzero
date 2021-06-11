@@ -10,7 +10,7 @@ import jax.random as jrng
 import optax
 
 from networks import mcts
-from networks.muzero import MuZeroParams, MuZero, MuZeroComponents
+from networks.muzero_def import MuZeroParams, MuZero, MuZeroComponents
 
 EPS = 1e-6
 

@@ -7,7 +7,7 @@ import common
 
 from typing import NamedTuple
 
-from networks.muzero import MuZero
+from networks.muzero_def import MuZero
 
 
 class MCTSParams(NamedTuple):

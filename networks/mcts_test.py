@@ -7,7 +7,7 @@ from pprint import pprint
 # dummy environment.
 # 3 states, tabular representation. fixed dynamics
 from networks import actor_network
-from muzero import init_muzero
+from muzero_def import init_muzero
 
 P_a1 = jnp.array([[0, 1, 0],
                  [0, 0, 1],
