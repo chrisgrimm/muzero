@@ -206,6 +206,7 @@ def muzero_loss(
         obs_traj: jnp.ndarray, # [K + n, *obs_size]
         a_traj: jnp.ndarray, # [K + n]
         r_traj: jnp.ndarray, # [K + n]
+        temperature: jnp.ndarray,
         config: common.Config,
 ):
     muzero = MuZero(muzero_params, muzero_comps)
@@ -215,10 +216,12 @@ def muzero_loss(
         muzero, obs_traj[0], a_traj[:K], config)
     r_loss_term = r_loss(r_traj, model_r_traj, config)
 
-    v_mcts = jax.vmap(mcts.run_and_get_value, (None, None, 0, None), 0)(muzero, key, obs_traj[n:], config)
+    v_mcts = jax.vmap(mcts.run_and_get_value, (None, None, 0, None), 0)(
+        muzero, key, obs_traj[n:], config)
     v_loss_term = v_loss(r_traj, v_mcts, model_v_traj, config)
 
-    pi_traj = jax.vmap(mcts.run_and_get_policy, (None, None, 0, None), 0)(muzero, key, obs_traj[:K], config)
+    pi_traj = jax.vmap(mcts.run_and_get_policy, (None, None, 0, None, None), 0)(
+        muzero, key, obs_traj[:K], jnp.array(1.0), config)
     pi_loss_term = policy_loss(pi_traj, model_pi_traj, config)
 
     loss = r_loss_term + v_loss_term + pi_loss_term

@@ -210,8 +210,10 @@ def run_mcts(
 
 def get_policy(
         mcts_params: MCTSParams,
+        temperature: jnp.ndarray,
 ) -> jnp.ndarray:
-    return mcts_params.N[0, :] / jnp.sum(mcts_params.N[0, :], axis=0)
+    T = 1. / temperature
+    return mcts_params.N[0, :]**T / jnp.sum(mcts_params.N[0, :]**T, axis=0)
 
 
 def get_value(
@@ -236,11 +238,12 @@ def run_and_get_policy(
         muzero: MuZero,
         key: jrng.PRNGKey,
         obs: jnp.ndarray,
+        temperature: jnp.ndarray,
         config: common.Config
 ) -> jnp.ndarray:
     mcts_key, sample_key = jrng.split(key, 2)
     mcts_params = run_mcts(obs, mcts_key, muzero, config)
-    return get_policy(mcts_params)
+    return get_policy(mcts_params, temperature)
 
 
 def run_and_get_value(

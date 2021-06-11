@@ -20,10 +20,11 @@ def make_parallel_muzero_actor(
     def act(
             muzero: MuZero,
             key: jrng.PRNGKey,
-            obs: jnp.ndarray
+            obs: jnp.ndarray,
+            temperature: jnp.ndarray,
     ):
-        batch_sample = jax.vmap(mcts.get_policy, (None, None, 0, None), 0)
-        return batch_sample(muzero, key, obs, config)
+        batch_sample = jax.vmap(mcts.get_policy, (None, None, 0, None, None), 0)
+        return batch_sample(muzero, key, obs, temperature, config)
 
     act = jax.jit(act)
 
@@ -31,8 +32,9 @@ def make_parallel_muzero_actor(
             muzero: MuZero,
             key: jrng.PRNGKey,
             obs: np.ndarray,
+            temperature: float,
     ):
-        return np.array(act(muzero, key, jnp.array(obs)))
+        return np.array(act(muzero, key, jnp.array(obs), jnp.array(temperature)))
 
     return wrapped
 
@@ -52,6 +54,7 @@ class ParallelTrajectoryRunner:
             num_parallel: int,
             env_fn: Callable[[], gym.Env],
             muzero: MuZero,
+            temperature: float,
             key: jrng.PRNGKey,
             config: common.Config,
     ):
@@ -62,12 +65,13 @@ class ParallelTrajectoryRunner:
         self._actor = make_parallel_muzero_actor(config)
         self._muzero = muzero
         self._key = key
+        self._temperature = temperature
 
     def get_trajs(self) -> List[List[Experience]]:
         to_emit = []
         while not to_emit:
             self._key, key = jrng.split(self._key, 2)
-            a_vec = self._actor(self._muzero, key, self._obs_vec)
+            a_vec = self._actor(self._muzero, key, self._obs_vec, self._temperature)
             next_obs_vec, reward_vec, done_vec, _ = self._env.step(a_vec)
             grouped = enumerate(zip(self._obs_vec, a_vec, reward_vec, next_obs_vec, done_vec))
             for i, (obs, a, reward, next_obs, done) in grouped:
@@ -84,3 +88,9 @@ class ParallelTrajectoryRunner:
             muzero: MuZero
     ) -> None:
         self._muzero = muzero
+
+    def update_temperature(
+            self,
+            temperature: float,
+    ) -> None:
+        self._temperature = temperature
