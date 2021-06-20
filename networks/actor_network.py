@@ -10,9 +10,7 @@ import jax.random as jrng
 import optax
 
 from networks import mcts
-from networks.muzero_def import MuZeroParams, MuZero, MuZeroComponents
-
-EPS = 1e-6
+from networks.muzero_def import MuZeroParams, MuZeroComponents
 
 
 def embed(
@@ -31,6 +29,9 @@ def embed(
     ])(obs)
 
 
+embed_t = hk.transform(embed)
+
+
 def dynamics(
         state,
         action,
@@ -44,6 +45,9 @@ def dynamics(
     ] * config['depth'])(sa)
 
 
+dynamics_t = hk.transform(dynamics)
+
+
 def reward(
         state,
         config
@@ -55,6 +59,9 @@ def reward(
     ])(state)[0]
 
 
+reward_t = hk.transform(reward)
+
+
 def value(
         state,
         config
@@ -64,6 +71,9 @@ def value(
         jax.nn.relu,
         hk.Linear(1)
     ])(state)[0]
+
+
+value_t = hk.transform(value)
 
 
 def policy(
@@ -78,18 +88,22 @@ def policy(
     ])(state)
 
 
+policy_t = hk.transform(policy)
+
+
 def rollout_model(
-        muzero: 'MuZero',
+        muzero_params: MuZeroParams,
+        muzero_comps: MuZeroComponents,
         obs,
         actions,
         config,
 ):
-    s = muzero.comps.embed.apply(muzero.params.embed, obs, config)
+    s = muzero_comps.embed.apply(muzero_params.embed, obs, config)
     def f(state, action):
-        r = muzero.comps.reward.apply(muzero.params.reward, state, config)
-        v = muzero.comps.value.apply(muzero.params.value, state, config)
-        pi = muzero.comps.policy.apply(muzero.params.policy, state, config)
-        next_state = muzero.comps.dynamics.apply(muzero.params.dynamics, state, action, config)
+        r = muzero_comps.reward.apply(muzero_params.reward, state, config)
+        v = muzero_comps.value.apply(muzero_params.value, state, config)
+        pi = muzero_comps.policy.apply(muzero_params.policy, state, config)
+        next_state = muzero_comps.dynamics.apply(muzero_params.dynamics, state, action, config)
         return next_state, (r, v, pi)
 
     _, (r_traj, v_traj, pi_traj) = jax.lax.scan(f, s, actions)
@@ -143,7 +157,7 @@ def policy_loss(
     A = config['num_actions']
     chex.assert_shape(env_pi_rollout, (K, A))
     chex.assert_shape(model_pi_rollout, (K, A))
-    cross_entropies = -jnp.sum(env_pi_rollout * jnp.log(model_pi_rollout + EPS), axis=1)
+    cross_entropies = -jnp.sum(env_pi_rollout * jnp.log(model_pi_rollout + common.EPS), axis=1)
     return jnp.sum(cross_entropies, axis=0)
 
 
@@ -156,19 +170,18 @@ def muzero_loss(
         r_traj: jnp.ndarray, # [K + n]
         config: common.Config,
 ):
-    muzero = MuZero(muzero_params, muzero_comps)
     n, K = config['environment_rollout_length'], config['model_rollout_length']
     # each is [K, ...]
     model_r_traj, model_v_traj, model_pi_traj = rollout_model(
-        muzero, obs_traj[0], a_traj[:K], config)
+        muzero_params, muzero_comps, obs_traj[0], a_traj[:K], config)
     r_loss_term = r_loss(r_traj, model_r_traj, config)
 
     v_mcts = jax.vmap(mcts.run_and_get_value, (None, None, 0, None), 0)(
-        muzero, key, obs_traj[n:], config)
+        muzero_params, muzero_comps, key, obs_traj[n:], config)
     v_loss_term = v_loss(r_traj, v_mcts, model_v_traj, config)
 
     pi_traj = jax.vmap(mcts.run_and_get_policy, (None, None, 0, None, None), 0)(
-        muzero, key, obs_traj[:K], jnp.array(1.0), config)
+        muzero_params, muzero_comps, key, obs_traj[:K], jnp.array(1.0), config)
     pi_loss_term = policy_loss(pi_traj, model_pi_traj, config)
 
     loss = r_loss_term + v_loss_term + pi_loss_term
@@ -176,7 +189,8 @@ def muzero_loss(
 
 
 def train_muzero(
-        muzero: MuZero,
+        muzero_params: MuZeroParams,
+        muzero_comps: MuZeroComponents,
         opt_state,
         optimizer,
         key: jrng.PRNGKey,
@@ -186,9 +200,9 @@ def train_muzero(
         config: common.Config,
 ):
     batched_loss = jax.vmap(muzero_loss, (None, None, None, 0, 0, 0, None))
-    batched_loss = lambda params, comp, key, obs, a, r, config: jnp.mean(batched_loss(params, comp, key, obs, a, r, config), axis=0)
+    batched_loss = lambda *args: jnp.mean(batched_loss(*args), axis=0)
     loss, grads = jax.value_and_grad(batched_loss)(
-        muzero.params, muzero.comps, key, obs_traj, a_traj, r_traj, config)
-    updates, opt_state = optimizer.update(grads, opt_state, muzero.params)
-    muzero = muzero._replace(params=optax.apply_updates(muzero.params, updates))
-    return loss, opt_state, muzero
+        muzero_params, muzero_comps, key, obs_traj, a_traj, r_traj, config)
+    updates, opt_state = optimizer.update(grads, opt_state, muzero_params)
+    muzero_params = optax.apply_updates(muzero_params, updates)
+    return loss, opt_state, muzero_params

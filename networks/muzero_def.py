@@ -1,4 +1,4 @@
-from typing import NamedTuple, Callable
+from typing import NamedTuple, Callable, Tuple
 import jax.numpy as jnp
 import jax.random as jrng
 import haiku as hk
@@ -21,10 +21,6 @@ class MuZeroComponents(NamedTuple):
     policy: hk.Transformed
     dynamics: hk.Transformed
 
-class MuZero(NamedTuple):
-    params: MuZeroParams
-    comps: MuZeroComponents
-
 
 def init_muzero(
         key: jrng.PRNGKey,
@@ -34,7 +30,7 @@ def init_muzero(
         policy: Callable[[jnp.ndarray], jnp.ndarray],
         dynamics: Callable[[jnp.ndarray, jnp.ndarray], jnp.ndarray],
         config: common.Config,
-) -> MuZero:
+) -> Tuple[MuZeroParams, MuZeroComponents]:
     dummy_obs = jnp.zeros(config['obs_shape'], dtype=jnp.float32)
     dummy_action = jnp.array(0, dtype=jnp.int32)
     dummy_state = jnp.zeros([config['embedding_size']], dtype=jnp.float32)
@@ -57,4 +53,4 @@ def init_muzero(
         dynamics=comps.dynamics.init(new_keys[4], dummy_state, dummy_action, config)
     )
 
-    return MuZero(params=params, comps=comps)
+    return params, comps

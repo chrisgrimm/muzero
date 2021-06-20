@@ -9,34 +9,9 @@ import numpy as np
 import ray
 
 import common
-from networks import mcts
-from networks.actor_network import MuZero
+from networks import mcts, actor_network
+from networks.actor_network import MuZeroParams, MuZeroComponents
 from environments.vec_env.subproc_vec_env import SubprocVecEnv
-
-
-def make_parallel_muzero_actor(
-        config: common.Config,
-):
-    def act(
-            muzero: MuZero,
-            key: jrng.PRNGKey,
-            obs: jnp.ndarray,
-            temperature: jnp.ndarray,
-    ):
-        batch_sample = jax.vmap(mcts.get_policy, (None, None, 0, None, None), 0)
-        return batch_sample(muzero, key, obs, temperature, config)
-
-    act = jax.jit(act)
-
-    def wrapped(
-            muzero: MuZero,
-            key: jrng.PRNGKey,
-            obs: np.ndarray,
-            temperature: float,
-    ):
-        return np.array(act(muzero, key, jnp.array(obs), jnp.array(temperature)))
-
-    return wrapped
 
 
 class Experience(NamedTuple):
@@ -53,7 +28,8 @@ class ParallelTrajectoryRunner:
             self,
             num_parallel: int,
             env_fn: Callable[[], gym.Env],
-            muzero: MuZero,
+            muzero_params: MuZeroParams,
+            muzero_comps: MuZeroComponents,
             temperature: float,
             key: jrng.PRNGKey,
             config: common.Config,
@@ -62,8 +38,8 @@ class ParallelTrajectoryRunner:
         self._trajectories = [[] for _ in range(num_parallel)]
         self._env = SubprocVecEnv([env_fn for _ in range(num_parallel)])
         self._obs_vec = self._env.reset()
-        self._actor = make_parallel_muzero_actor(config)
-        self._muzero = muzero
+        self._actor =
+        self._muzero_params = muzero_params
         self._key = key
         self._temperature = temperature
 
@@ -71,7 +47,7 @@ class ParallelTrajectoryRunner:
         to_emit = []
         while not to_emit:
             self._key, key = jrng.split(self._key, 2)
-            a_vec = self._actor(self._muzero, key, self._obs_vec, self._temperature)
+            a_vec = self._actor(self._muzero_params, self._muzero_comps, key, self._obs_vec, self._temperature)
             next_obs_vec, reward_vec, done_vec, _ = self._env.step(a_vec)
             grouped = enumerate(zip(self._obs_vec, a_vec, reward_vec, next_obs_vec, done_vec))
             for i, (obs, a, reward, next_obs, done) in grouped:
@@ -85,7 +61,7 @@ class ParallelTrajectoryRunner:
 
     def update_agent(
             self,
-            muzero: MuZero
+            muzero: MuZeroParams
     ) -> None:
         self._muzero = muzero
 

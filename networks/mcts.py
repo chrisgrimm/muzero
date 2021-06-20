@@ -7,7 +7,7 @@ import common
 
 from typing import NamedTuple
 
-from networks.muzero_def import MuZero
+from networks.muzero_def import MuZeroParams, MuZeroComponents
 
 
 class MCTSParams(NamedTuple):
@@ -28,14 +28,15 @@ class MCTSRollout(NamedTuple):
 
 
 def init_mcts_params(
-        muzero: MuZero,
+        muzero_params: MuZeroParams,
+        muzero_comps: MuZeroComponents,
         key: jrng.PRNGKey,
         obs: jnp.ndarray,
         config: common.Config
 ) -> MCTSParams:
     key, *keys = jrng.split(key, 2)
     c = config
-    s = muzero.comps.embed.apply(muzero.params.embed, keys[0], obs, config)
+    s = muzero_comps.embed.apply(muzero_params.embed, keys[0], obs, config)
     base_params = MCTSParams(
         node_num=0,
         transitions=(-1 * jnp.ones((c['num_simulations'], c['num_actions']), dtype=jnp.int32)),
@@ -111,7 +112,8 @@ def rollout_to_leaf(
 
 def expand_leaf(
         mcts_params: MCTSParams,
-        muzero: MuZero,
+        muzero_params: MuZeroParams,
+        muzero_comps: MuZeroComponents,
         key: jrng.PRNGKey,
         rollout: MCTSRollout,
         config: common.Config
@@ -121,10 +123,10 @@ def expand_leaf(
     embedding = mcts_params.embeddings[node_idx]
 
     key, *keys = jrng.split(key, 5)
-    next_embedding = muzero.comps.dynamics.apply(muzero.params.dynamics, keys[0], embedding, action, config)
-    reward = muzero.comps.reward.apply(muzero.params.reward, keys[1], next_embedding, config)
-    value = muzero.comps.value.apply(muzero.params.value, keys[2], next_embedding, config)
-    policy = muzero.comps.policy.apply(muzero.params.policy, keys[3], next_embedding, config)
+    next_embedding = muzero_comps.dynamics.apply(muzero_params.dynamics, keys[0], embedding, action, config)
+    reward = muzero_comps.reward.apply(muzero_params.reward, keys[1], next_embedding, config)
+    value = muzero_comps.value.apply(muzero_params.value, keys[2], next_embedding, config)
+    policy = muzero_comps.policy.apply(muzero_params.policy, keys[3], next_embedding, config)
 
     expanded_idx = mcts_params.node_num + 1
     mcts_params = mcts_params._replace(
@@ -189,7 +191,8 @@ def backup(
 def run_mcts(
         obs: jnp.ndarray,
         key: jrng.PRNGKey,
-        muzero: MuZero,
+        muzero_params: MuZeroParams,
+        muzero_comps: MuZeroComponents,
         config: common.Config,
 ) -> MCTSParams:
 
@@ -197,12 +200,12 @@ def run_mcts(
         mcts_params, key = carry
         key, *new_keys = jrng.split(key, 2)
         rollout = rollout_to_leaf(mcts_params, config)
-        mcts_params = expand_leaf(mcts_params, muzero, new_keys[0], rollout, config)
+        mcts_params = expand_leaf(mcts_params, muzero_params, muzero_comps, new_keys[0], rollout, config)
         mcts_params = backup(mcts_params, rollout, config)
         return (mcts_params, key), None
 
     init_key, mcts_key = jrng.split(key)
-    mcts_params = init_mcts_params(muzero, init_key, obs, config)
+    mcts_params = init_mcts_params(muzero_params, muzero_comps, init_key, obs, config)
     (mcts_params, _), _ = jax.lax.scan(f, (mcts_params, mcts_key), jnp.arange(config['num_simulations']))
     return mcts_params
 
@@ -222,35 +225,39 @@ def get_value(
 
 
 def sample_action(
-        muzero: MuZero,
+        muzero_params: MuZeroParams,
+        muzero_comps: MuZeroComponents,
         key: jrng.PRNGKey,
         obs: jnp.ndarray,
+        temperature: np.ndarray,
         config: common.Config
 ) -> jnp.ndarray:
     mcts_key, sample_key = jrng.split(key, 2)
-    mcts_params = run_mcts(obs, mcts_key, muzero, config)
-    policy = get_policy(mcts_params)
+    mcts_params = run_mcts(obs, mcts_key, muzero_params, muzero_comps, config)
+    policy = get_policy(mcts_params, temperature)
     return jrng.choice(sample_key, config['num_actions'], p=policy)
 
 
 def run_and_get_policy(
-        muzero: MuZero,
+        muzero_params: MuZeroParams,
+        muzero_comps: MuZeroComponents,
         key: jrng.PRNGKey,
         obs: jnp.ndarray,
         temperature: jnp.ndarray,
         config: common.Config
 ) -> jnp.ndarray:
     mcts_key, sample_key = jrng.split(key, 2)
-    mcts_params = run_mcts(obs, mcts_key, muzero, config)
+    mcts_params = run_mcts(obs, mcts_key, muzero_params, muzero_comps, config)
     return get_policy(mcts_params, temperature)
 
 
 def run_and_get_value(
-        muzero: MuZero,
+        muzero_params: MuZeroParams,
+        muzero_comps: MuZeroComponents,
         key: jrng.PRNGKey,
         obs: jnp.ndarray,
         config: common.Config
 ) -> jnp.ndarray:
     mcts_key, sample_key = jrng.split(key, 2)
-    mcts_params = run_mcts(obs, mcts_key, muzero, config)
+    mcts_params = run_mcts(obs, mcts_key, muzero_params, muzero_comps, config)
     return get_value(mcts_params)
