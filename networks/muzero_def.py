@@ -24,14 +24,15 @@ class MuZeroComponents(NamedTuple):
 
 def init_muzero(
         key: jrng.PRNGKey,
-        embed: Callable[[jnp.ndarray], jnp.ndarray],
+        embed: Callable[[Tuple[jnp.ndarray, jnp.ndarray]], jnp.ndarray],
         reward: Callable[[jnp.ndarray], jnp.ndarray],
         value: Callable[[jnp.ndarray], jnp.ndarray],
         policy: Callable[[jnp.ndarray], jnp.ndarray],
         dynamics: Callable[[jnp.ndarray, jnp.ndarray], jnp.ndarray],
         config: common.Config,
 ) -> Tuple[MuZeroParams, MuZeroComponents]:
-    dummy_obs = jnp.zeros(config['obs_shape'], dtype=jnp.float32)
+    dummy_obs = (jnp.zeros((config['num_hist'],) + config['obs_shape'], dtype=jnp.float32),
+                 jnp.zeros((config['num_hist'],), dtype=jnp.uint8))
     dummy_action = jnp.array(0, dtype=jnp.int32)
     dummy_state = jnp.zeros([config['embedding_size']], dtype=jnp.float32)
 

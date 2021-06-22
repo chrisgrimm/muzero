@@ -5,7 +5,7 @@ import jax.random as jrng
 import numpy as np
 import common
 
-from typing import NamedTuple
+from typing import NamedTuple, Tuple
 
 from networks.muzero_def import MuZeroParams, MuZeroComponents
 
@@ -31,7 +31,7 @@ def init_mcts_params(
         muzero_params: MuZeroParams,
         muzero_comps: MuZeroComponents,
         key: jrng.PRNGKey,
-        obs: jnp.ndarray,
+        obs: Tuple[jnp.ndarray, jnp.ndarray],
         config: common.Config
 ) -> MCTSParams:
     key, *keys = jrng.split(key, 2)
@@ -189,7 +189,7 @@ def backup(
 
 
 def run_mcts(
-        obs: jnp.ndarray,
+        obs: Tuple[jnp.ndarray, jnp.ndarray],
         key: jrng.PRNGKey,
         muzero_params: MuZeroParams,
         muzero_comps: MuZeroComponents,
@@ -228,7 +228,7 @@ def sample_action(
         muzero_params: MuZeroParams,
         muzero_comps: MuZeroComponents,
         key: jrng.PRNGKey,
-        obs: jnp.ndarray,
+        obs: Tuple[jnp.ndarray, jnp.ndarray],
         temperature: np.ndarray,
         config: common.Config
 ) -> jnp.ndarray:
@@ -238,26 +238,16 @@ def sample_action(
     return jrng.choice(sample_key, config['num_actions'], p=policy)
 
 
-def run_and_get_policy(
+def run_and_get_actor_quantities(
         muzero_params: MuZeroParams,
         muzero_comps: MuZeroComponents,
         key: jrng.PRNGKey,
-        obs: jnp.ndarray,
+        obs: Tuple[jnp.ndarray, jnp.ndarray],
         temperature: jnp.ndarray,
         config: common.Config
-) -> jnp.ndarray:
+) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
     mcts_key, sample_key = jrng.split(key, 2)
     mcts_params = run_mcts(obs, mcts_key, muzero_params, muzero_comps, config)
-    return get_policy(mcts_params, temperature)
-
-
-def run_and_get_value(
-        muzero_params: MuZeroParams,
-        muzero_comps: MuZeroComponents,
-        key: jrng.PRNGKey,
-        obs: jnp.ndarray,
-        config: common.Config
-) -> jnp.ndarray:
-    mcts_key, sample_key = jrng.split(key, 2)
-    mcts_params = run_mcts(obs, mcts_key, muzero_params, muzero_comps, config)
-    return get_value(mcts_params)
+    policy = get_policy(mcts_params, temperature)
+    action = jrng.choice(sample_key, config['num_actions'], p=policy)
+    return action, policy, get_value(mcts_params)
