@@ -7,6 +7,7 @@ import common
 
 from typing import NamedTuple, Tuple
 
+from networks import muzero_functions
 from networks.muzero_def import MuZeroParams, MuZeroComponents
 
 
@@ -124,8 +125,11 @@ def expand_leaf(
 
     key, *keys = jrng.split(key, 5)
     next_embedding = muzero_comps.dynamics.apply(muzero_params.dynamics, keys[0], embedding, action, config)
-    reward = muzero_comps.reward.apply(muzero_params.reward, keys[1], next_embedding, config)
-    value = muzero_comps.value.apply(muzero_params.value, keys[2], next_embedding, config)
+    reward_cat = muzero_comps.reward.apply(muzero_params.reward, keys[1], next_embedding, config)
+    reward = muzero_functions.get_scalar(reward_cat, config)
+    value_cat = muzero_comps.value.apply(muzero_params.value, keys[2], next_embedding, config)
+    scaled_value = muzero_functions.get_scalar(value_cat, config)
+    value = muzero_functions.invert_target_transform(scaled_value)
     policy = muzero_comps.policy.apply(muzero_params.policy, keys[3], next_embedding, config)
 
     expanded_idx = mcts_params.node_num + 1

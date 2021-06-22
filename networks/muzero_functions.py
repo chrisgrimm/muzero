@@ -59,6 +59,7 @@ def dynamics(
         action,
         config
 ):
+    state = (state - jnp.min(state, keepdims=True)) / (jnp.max(state, keepdims=True) - jnp.min(state, keepdims=True))
     action = jnp.broadcast_to(jax.nn.one_hot(action, config['num_actions']), state.shape)
     sa = jnp.concatenate([state, action], axis=2)
     return hk.Sequential([
@@ -72,6 +73,36 @@ def dynamics(
 dynamics_t = hk.transform(dynamics)
 
 
+def get_categorical(
+        x,  # []
+        config: common.Config,
+):
+    delta_z = (config['cat_max'] - config['cat_min']) / (config['num_cat'] - 1)
+    bins = jnp.array([config['cat_min'] + i * delta_z for i in range(config['num_cat'])])
+    overlaps = jnp.abs(x[None] - bins[None, :])  # [num_bins]
+    return overlaps
+
+
+def get_scalar(
+        c,
+        config: common.Config,
+):
+    delta_z = (config['cat_max'] - config['cat_min']) / (config['num_cat'] - 1)
+    bins = jnp.array([config['cat_min'] + i * delta_z for i in range(config['num_cat'])])
+    return jnp.sum(bins * c, axis=0)
+
+
+def target_transform(t):
+    eps = 0.001
+    return jnp.sign(t) * (jnp.sqrt(jnp.abs(t) + 1) - 1) + t * eps
+
+
+def invert_target_transform(h):
+    eps = 0.001
+    inner = (jnp.sqrt(1 + 4*eps*(jnp.abs(h) + 1 + eps)) - 1) / (2*eps)
+    return jnp.sign(h) * (inner**2 - 1)
+
+
 def reward(
         state,
         config
@@ -82,8 +113,9 @@ def reward(
         hk.Conv2D(32, 3, 1, padding='VALID'),
         jax.nn.relu,
         lambda x: jnp.reshape(x, [32 * 6 * 6]),
-        hk.Linear(1)
-    ])(state)[0]
+        hk.Linear(config['num_cat']),
+        jax.nn.softmax
+    ])(state)
 
 
 reward_t = hk.transform(reward)
@@ -99,8 +131,9 @@ def value(
         hk.Conv2D(32, 3, 1, padding='VALID'),
         jax.nn.relu,
         lambda x: jnp.reshape(x, [32 * 6 * 6]),
-        hk.Linear(1)
-    ])(state)[0]
+        hk.Linear(config['num_cat']),
+        jax.nn.softmax
+    ])(state)
 
 
 value_t = hk.transform(value)
@@ -111,8 +144,11 @@ def policy(
         config
 ):
     return hk.Sequential([
-        hk.Linear(config['embedding_size']),
+        hk.Conv2D(64, 3, 1, padding='VALID'),
         jax.nn.relu,
+        hk.Conv2D(32, 3, 1, padding='VALID'),
+        jax.nn.relu,
+        lambda x: jnp.reshape(x, [32 * 6 * 6]),
         hk.Linear(config['num_actions']),
         jax.nn.softmax,
     ])(state)
@@ -142,13 +178,17 @@ def rollout_model(
 
 def r_loss(
         env_r_rollout, # [K + n]
-        model_r_rollout, # [K]
+        model_r_rollout, # [K, num_bins]
         config
 ):
-    chex.assert_shape(model_r_rollout, (config['model_rollout_length'],))
-    chex.assert_shape(env_r_rollout, (config['model_rollout_length'] + config['environment_rollout_length'],))
     env_r_rollout = env_r_rollout[:config['model_rollout_length']]
-    return jnp.sum((env_r_rollout - model_r_rollout)**2, axis=0)
+    cat_env_r_rollout = jax.vmap(get_categorical, (0, None), 0)(env_r_rollout, config)  # [K, num_bins]
+    cross_ents = jax.vmap(_cross_entropy, (0, 0), 0)(cat_env_r_rollout, model_r_rollout)
+    return jnp.sum(cross_ents, axis=0)
+
+
+def _cross_entropy(p, q):
+    return -jnp.sum(p * jnp.log(q + common.EPS), axis=0)
 
 
 def v_loss(
@@ -169,8 +209,11 @@ def v_loss(
         env_r = env_r_rollout[k+1:k+n]
         gamma_terms = np.array([gamma ** t for t in range(n-1)])
         env_n_step = jnp.sum(env_r * gamma_terms, axis=0)
-        target = jax.lax.stop_gradient(env_n_step + gamma**n * v_bootstraps[k])
-        loss_term = (model_v_rollout[k] - target)**2
+        # These bootstraps should already be unscaled in the mcts phase.
+        unscaled_target = jax.lax.stop_gradient(env_n_step + gamma**n * v_bootstraps[k])
+        target = target_transform(unscaled_target)
+        categorical_target = get_categorical(target, config)
+        loss_term = _cross_entropy(categorical_target, model_v_rollout[k])
         return loss + loss_term, target
 
     v_loss, targets = jax.lax.scan(f, 0.0, np.arange(K))
@@ -188,7 +231,7 @@ def policy_loss(
     A = config['num_actions']
     chex.assert_shape(env_pi_rollout, (K, A))
     chex.assert_shape(model_pi_rollout, (K, A))
-    cross_entropies = -jnp.sum(env_pi_rollout * jnp.log(model_pi_rollout + common.EPS), axis=1)
+    cross_entropies = jax.vmap(_cross_entropy, (0, 0), 0)(env_pi_rollout, model_pi_rollout)
     return jnp.sum(cross_entropies, axis=0)
 
 
@@ -246,7 +289,7 @@ def muzero_loss(
     #    muzero_params, muzero_comps, key, obs_traj[:K], jnp.array(1.0), config)
     pi_loss_term = policy_loss(search_pi_traj[:K], model_pi_traj, config)
 
-    loss = r_loss_term + v_loss_term + pi_loss_term
+    loss = (1 / K) * (r_loss_term + v_loss_term + pi_loss_term)
     loss = importance_weight * loss
     return loss, new_priority
 
