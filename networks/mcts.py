@@ -41,7 +41,7 @@ def init_mcts_params(
     base_params = MCTSParams(
         node_num=0,
         transitions=(-1 * jnp.ones((c['num_simulations'], c['num_actions']), dtype=jnp.int32)),
-        embeddings=jnp.zeros((c['num_simulations'] + 1, c['embedding_size']), dtype=jnp.float32),
+        embeddings=jnp.zeros((c['num_simulations'] + 1, *c['embedding_shape']), dtype=jnp.float32),
         N=jnp.zeros((c['num_simulations'], c['num_actions']), dtype=jnp.float32),
         P=jnp.zeros((c['num_simulations'], c['num_actions']), dtype=jnp.float32),
         Q=jnp.zeros((c['num_simulations'], c['num_actions']), dtype=jnp.float32),
@@ -49,7 +49,7 @@ def init_mcts_params(
         V=jnp.zeros((c['num_simulations'] + 1,), dtype=jnp.float32),
     )
     return base_params._replace(
-        embeddings=jax.ops.index_update(base_params.embeddings, jax.ops.index[0, :], s)
+        embeddings=jax.ops.index_update(base_params.embeddings, jax.ops.index[0], s)
     )
 
 
@@ -135,11 +135,11 @@ def expand_leaf(
     expanded_idx = mcts_params.node_num + 1
     mcts_params = mcts_params._replace(
         embeddings=jax.ops.index_update(
-            mcts_params.embeddings, jax.ops.index[expanded_idx, :], next_embedding),
+            mcts_params.embeddings, jax.ops.index[expanded_idx], next_embedding),
         transitions=jax.ops.index_update(
             mcts_params.transitions, jax.ops.index[node_idx, action], expanded_idx),
         R=jax.ops.index_update(mcts_params.R, jax.ops.index[node_idx, action], reward),
-        P=jax.ops.index_update(mcts_params.P, jax.ops.index[node_idx, :], policy),
+        P=jax.ops.index_update(mcts_params.P, jax.ops.index[node_idx], policy),
         V=jax.ops.index_update(mcts_params.V, jax.ops.index[expanded_idx], value),
         node_num=mcts_params.node_num + 1
     )

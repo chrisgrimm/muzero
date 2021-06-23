@@ -28,6 +28,8 @@ class Step(NamedTuple):
 
 class Reset(NamedTuple):
     obs: np.ndarray
+    search_policy: np.ndarray
+    search_value: float
 
 
 ReplayConsumable = Union[Step, Reset]
@@ -41,10 +43,9 @@ class ParallelTrajectoryRunner:
             num_parallel: int,
             env_fn: Callable[[], gym.Env],
             muzero_params: MuZeroParams,
-            actor: MuZeroActor,
+            make_actor: Callable[[], MuZeroActor],
             temperature: float,
             key: jrng.PRNGKey,
-            num_before: int,
             config: common.Config,
     ):
         # os.environ["MKL_NUM_THREADS"] = "1"
@@ -52,35 +53,73 @@ class ParallelTrajectoryRunner:
         self._trajs: List[List[ReplayConsumable]] = [[] for _ in range(num_parallel)]
 
         self._env = SubprocVecEnv([env_fn for _ in range(num_parallel)])
-        self._histories = [history_buffer.create_history(num_before, config['num_actions'], (96, 96, 3))
+        self._histories = [history_buffer.create_history(config['num_stack']-1, config['num_actions'], (96, 96, 3))
                            for _ in range(num_parallel)]
-        self._actor = actor
+        self._make_actor = make_actor
+        self._actor = make_actor()
         self._muzero_params = muzero_params
         self._key = key
         self._temperature = temperature
+        self._num_actions = config['num_actions']
 
         self._obs_vec = self._env.reset()
-        for i, (obs, policy, value) in enumerate(self._obs_vec):
-            self._trajs[i].append(Reset(obs))
+
+        for i, obs in enumerate(self._obs_vec):
             self._histories[i] = history_buffer.reset(self._histories[i], obs)
+
+        actor_inp = (np.stack([hist.obs for hist in self._histories]),
+                     np.stack([hist.a for hist in self._histories]))
+        #a_vec, pi_vec, value_vec = self._actor(self._muzero_params, key, actor_inp, self._temperature)
+        a_vec, pi_vec, value_vec = (np.zeros([self._num_parallel], dtype=np.uint8),
+                                    np.zeros([self._num_parallel, self._num_actions], dtype=np.float32),
+                                    np.zeros([self._num_parallel], dtype=np.float32))
+        self._a_vec = a_vec
+
+        for i, (obs, pi, v) in enumerate(zip(self._obs_vec, pi_vec, value_vec)):
+            self._trajs[i].append(Reset(obs, pi, v))
 
     def get_trajs(self) -> List[List[ReplayConsumable]]:
         to_emit = []
+        j = 0
         while not to_emit:
             self._key, key = jrng.split(self._key, 2)
-            actor_inp = (np.stack(hist.obs for hist in self._histories),
-                         np.stack(hist.a for hist in self._histories))
-            a_vec, pi_vec, value_vec = self._actor(self._muzero_params, key, actor_inp, self._temperature)
-            self._obs_vec, r_vec, done_vec, _ = self._env.step(a_vec)
-            grouped = enumerate(zip(pi_vec, value_vec, a_vec, r_vec, self._obs_vec, done_vec))
+
+            # Step using the cached action and update the histories
+            self._obs_vec, r_vec, done_vec, _ = self._env.step(self._a_vec)
+            for i, (obs, a, r, done) in enumerate(zip(self._obs_vec, self._a_vec, r_vec, done_vec)):
+                self._histories[i] = history_buffer.step(self._histories[i], obs, a, r, done)
+            # Get the next action from the actor.
+            actor_inp = (np.stack([hist.obs for hist in self._histories]),
+                         np.stack([hist.a for hist in self._histories]))
+            #a_vec, pi_vec, value_vec = self._actor(self._muzero_params, key, actor_inp, self._temperature)
+            a_vec, pi_vec, value_vec = (np.zeros([self._num_parallel], dtype=np.uint8),
+                                        np.zeros([self._num_parallel, self._num_actions], dtype=np.float32),
+                                        np.zeros([self._num_parallel], dtype=np.float32))
+            reset_indices = []
+            # Store the pi_vec and value_vec into Step objects and update trajectories
+            grouped = enumerate(zip(pi_vec, value_vec, self._a_vec, r_vec, self._obs_vec, done_vec))
             for i, (pi, value, a, r, obs, done) in grouped:
                 exp = Step(obs, pi, value, a, r, done)
                 self._trajs[i].append(exp)
-                self._histories[i] = history_buffer.step(self._histories[i], obs, a, r, done)
                 if done:
                     to_emit.append(self._trajs[i])
-                    self._trajs[i] = [Reset(obs)]
+                    reset_indices.append(i)
                     self._histories[i] = history_buffer.reset(self._histories[i], obs)
+            self._a_vec = a_vec
+            # update appropriate quantities for reset indices.
+            if len(reset_indices):
+                actor_inp = (np.stack([self._histories[i].obs for i in reset_indices]),
+                             np.stack([self._histories[i].a for i in reset_indices]))
+                #reset_a_vec, reset_pi_vec, reset_value_vec = self._actor(
+                #    self._muzero_params, key, actor_inp, self._temperature)
+                reset_a_vec, reset_pi_vec, reset_value_vec = (
+                    np.zeros([len(reset_indices)], dtype=np.uint8),
+                    np.zeros([len(reset_indices), self._num_actions], dtype=np.float32),
+                    np.zeros([len(reset_indices)], dtype=np.float32))
+                for idx, reset_idx in enumerate(reset_indices):
+                    self._trajs[reset_idx] = [Reset(self._obs_vec[reset_idx], reset_pi_vec[idx], reset_value_vec[idx])]
+                    self._a_vec[reset_idx] = reset_a_vec[idx]
+            j += 1
         return to_emit
 
     def update_agent(
@@ -105,12 +144,14 @@ def init_runner(
         num_parallel: int,
         env_fn: Callable[[], gym.Env],
         muzero_params: MuZeroParams,
-        actor: MuZeroActor,
+        make_actor: Callable[[], MuZeroActor],
         temperature: float,
         key: jrng.PRNGKey,
+        config: common.Config,
 ) -> RunnerHandle:
-    runner = ParallelTrajectoryRunner(num_parallel, env_fn, muzero_params, actor, temperature, key)
-    task_id = runner.remote.get_trajs()
+    runner = ParallelTrajectoryRunner.remote(
+        num_parallel, env_fn, muzero_params, make_actor, temperature, key, config)
+    task_id = runner.get_trajs.remote()
     return RunnerHandle(runner=runner, task_id=task_id)
 
 
@@ -120,7 +161,7 @@ def get_if_ready(
     done, waiting = ray.wait([handle.task_id], timeout=0)
     if len(done) == 1:
         consumables = ray.get(done[0])
-        new_task_id = handle.runner.remote.get_trajs()
+        new_task_id = handle.runner.get_trajs.remote()
         return consumables, RunnerHandle(runner=handle.runner, task_id=new_task_id)
     else:
         return [], handle
@@ -130,7 +171,7 @@ def update_muzero_params(
         handle: RunnerHandle,
         muzero_params: MuZeroParams
 ) -> RunnerHandle:
-    handle.runner.update_agent(muzero_params)
+    ray.get(handle.runner.update_agent.remote(muzero_params))
     return handle
 
 
@@ -138,18 +179,46 @@ def update_temperature(
         handle: RunnerHandle,
         temperature: float
 ) -> RunnerHandle:
-    handle.runner.update_temperature(temperature)
+    ray.get(handle.runner.update_temperature.remote(temperature))
     return handle
+
+
+def compute_priority(
+        traj: List[ReplayConsumable],
+        t: int,
+        config: common.Config,
+) -> float:
+    n = config['env_rollout_length']
+    g = config['gamma']
+    returns = 0
+    vt = traj[t].search_value
+    max_idx = min(t+n+1, len(traj))
+    i, tt = 0, t+1
+    for i, tt in enumerate(range(t+1, max_idx)):
+        returns += g**i * traj[tt].r
+    try:
+        returns += g**(i+1) * traj[tt].search_value
+    except IndexError:
+        pass
+
+    return np.abs(vt - returns)
+
 
 
 def feed_buffer(
         trajectories: List[List[ReplayConsumable]],
-        buffer: TrajectoryReplayBuffer
+        buffer: TrajectoryReplayBuffer,
+        config: common.Config,
 ) -> None:
     for traj in trajectories:
-        for elem in traj:
+        for t in range(len(traj)):
+            elem = traj[t]
+            priority = compute_priority(traj, t, config)
             if isinstance(elem, Reset):
-                buffer.reset(obs=elem.obs)
+                buffer.reset(obs=elem.obs,
+                             search_v=elem.search_value,
+                             search_pi=elem.search_policy,
+                             priority=priority)
             else:
                 buffer.step(
                     obs=elem.obs,
@@ -157,5 +226,6 @@ def feed_buffer(
                     search_pi=elem.search_policy,
                     a=elem.a,
                     r=elem.r,
-                    done=elem.done
+                    done=elem.done,
+                    priority=(0 if elem.done else priority)
                 )

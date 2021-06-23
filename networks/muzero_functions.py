@@ -20,7 +20,7 @@ def _stack_obs_and_actions(
         config: common.Config
 ):
     img_obs = jnp.transpose(img_obs, [1, 2, 0, 3]) / 255.  # [96, 96, num_back, 3]
-    action_obs = (action_obs / config['num_actions'])[:, :, None, :]
+    action_obs = (action_obs / config['num_actions'])[None, None, :, None]
     action_obs = jnp.ones(img_obs.shape[:3] + (1,), dtype=jnp.float32) * action_obs
     stacked = jnp.concatenate([img_obs, action_obs], axis=3)  # [96, 96, num_back, 4]
     h, w, num_back, channels = jnp.shape(stacked)
@@ -33,22 +33,37 @@ def embed(
         config: common.Config,
 ):
     stacked = _stack_obs_and_actions(obs[0], obs[1], config)
-    return hk.Sequential([
-        hk.Conv2D(128, 3, 2, padding='VALID'),
-        jax.nn.relu,
-        ResidualBlock(128, 3),
-        ResidualBlock(128, 3),
-        hk.Conv2D(256, 3, 2, padding='VALID'),
-        jax.nn.relu,
-        ResidualBlock(256, 3),
-        ResidualBlock(256, 3),
-        ResidualBlock(256, 3),
-        hk.AvgPool(2, 2, 'VALID'),
-        ResidualBlock(256, 3),
-        ResidualBlock(256, 3),
-        ResidualBlock(256, 3),
-        hk.AvgPool(2, 2, 'VALID'),
-    ])(stacked)
+    x = hk.Conv2D(128, 3, 2, padding='SAME')(stacked)
+    x = jax.nn.relu(x)
+    x = ResidualBlock(128, 3)(x)
+    x = ResidualBlock(128, 3)(x)
+    x = hk.Conv2D(256, 3, 2, padding='SAME')(x)
+    x = jax.nn.relu(x)
+    x = ResidualBlock(256, 3)(x)
+    x = ResidualBlock(256, 3)(x)
+    x = ResidualBlock(256, 3)(x)
+    x = hk.AvgPool((2, 2, 1), (2, 2, 1), 'SAME')(x)
+    x = ResidualBlock(256, 3)(x)
+    x = ResidualBlock(256, 3)(x)
+    x = ResidualBlock(256, 3)(x)
+    x = hk.AvgPool((2, 2, 1), (2, 2, 1), 'SAME')(x)
+    return x
+    # return hk.Sequential([
+    #     hk.Conv2D(128, 3, 2, padding='VALID'),
+    #     jax.nn.relu,
+    #     ResidualBlock(128, 3),
+    #     ResidualBlock(128, 3),
+    #     hk.Conv2D(256, 3, 2, padding='VALID'),
+    #     jax.nn.relu,
+    #     ResidualBlock(256, 3),
+    #     ResidualBlock(256, 3),
+    #     ResidualBlock(256, 3),
+    #     hk.AvgPool(2, 2, 'VALID'),
+    #     ResidualBlock(256, 3),
+    #     ResidualBlock(256, 3),
+    #     ResidualBlock(256, 3),
+    #     hk.AvgPool(2, 2, 'VALID'),
+    # ])(stacked)
 
 
 embed_t = hk.transform(embed)
@@ -59,11 +74,13 @@ def dynamics(
         action,
         config
 ):
-    state = (state - jnp.min(state, keepdims=True)) / (jnp.max(state, keepdims=True) - jnp.min(state, keepdims=True))
-    action = jnp.broadcast_to(jax.nn.one_hot(action, config['num_actions']), state.shape)
+    state = ((state - jnp.min(state, keepdims=True)) /
+             (jnp.max(state, keepdims=True) - jnp.min(state, keepdims=True) + common.EPS))
+    action = jax.nn.one_hot(action, config['num_actions'])[None, None, :]
+    action = jnp.tile(action, (*state.shape[:2], 1))
     sa = jnp.concatenate([state, action], axis=2)
     return hk.Sequential([
-        hk.Conv2D(256, 3, 1, padding='VALID'),
+        hk.Conv2D(256, 3, 1, padding='SAME'),
         jax.nn.relu,
         ResidualBlock(256, 3),
         ResidualBlock(256, 3)
@@ -108,11 +125,11 @@ def reward(
         config
 ):
     return hk.Sequential([
-        hk.Conv2D(64, 3, 1, padding='VALID'),
+        hk.Conv2D(64, 3, 1, padding='SAME'),
         jax.nn.relu,
-        hk.Conv2D(32, 3, 1, padding='VALID'),
+        hk.Conv2D(32, 3, 1, padding='SAME'),
         jax.nn.relu,
-        lambda x: jnp.reshape(x, [32 * 6 * 6]),
+        lambda x: jnp.reshape(x, [-1]),
         hk.Linear(config['num_cat']),
         jax.nn.softmax
     ])(state)
@@ -126,11 +143,11 @@ def value(
         config
 ):
     return hk.Sequential([
-        hk.Conv2D(64, 3, 1, padding='VALID'),
+        hk.Conv2D(64, 3, 1, padding='SAME'),
         jax.nn.relu,
-        hk.Conv2D(32, 3, 1, padding='VALID'),
+        hk.Conv2D(32, 3, 1, padding='SAME'),
         jax.nn.relu,
-        lambda x: jnp.reshape(x, [32 * 6 * 6]),
+        lambda x: jnp.reshape(x, [-1]),
         hk.Linear(config['num_cat']),
         jax.nn.softmax
     ])(state)
@@ -144,11 +161,11 @@ def policy(
         config
 ):
     return hk.Sequential([
-        hk.Conv2D(64, 3, 1, padding='VALID'),
+        hk.Conv2D(64, 3, 1, padding='SAME'),
         jax.nn.relu,
-        hk.Conv2D(32, 3, 1, padding='VALID'),
+        hk.Conv2D(32, 3, 1, padding='SAME'),
         jax.nn.relu,
-        lambda x: jnp.reshape(x, [32 * 6 * 6]),
+        lambda x: jnp.reshape(x, [-1]),
         hk.Linear(config['num_actions']),
         jax.nn.softmax,
     ])(state)
@@ -164,15 +181,21 @@ def rollout_model(
         actions,
         config,
 ):
-    s = muzero_comps.embed.apply(muzero_params.embed, obs, config)
+    s = muzero_comps.embed.apply(muzero_params.embed, None, obs, config)
     def f(state, action):
-        r = muzero_comps.reward.apply(muzero_params.reward, state, config)
-        v = muzero_comps.value.apply(muzero_params.value, state, config)
-        pi = muzero_comps.policy.apply(muzero_params.policy, state, config)
-        next_state = muzero_comps.dynamics.apply(muzero_params.dynamics, state, action, config)
+        r = muzero_comps.reward.apply(muzero_params.reward, None, state, config)
+        v = muzero_comps.value.apply(muzero_params.value, None, state, config)
+        pi = muzero_comps.policy.apply(muzero_params.policy, None, state, config)
+        next_state = muzero_comps.dynamics.apply(muzero_params.dynamics, None, state, action, config)
         return next_state, (r, v, pi)
-
-    _, (r_traj, v_traj, pi_traj) = jax.lax.scan(f, s, actions)
+    final_s, (r_traj, v_traj, pi_traj) = jax.lax.scan(f, s, actions)
+    final_r, final_v, final_pi = (
+        muzero_comps.reward.apply(muzero_params.reward, None, final_s, config),
+        muzero_comps.value.apply(muzero_params.value, None, final_s, config),
+        muzero_comps.policy.apply(muzero_params.policy, None, final_s, config))
+    r_traj = jnp.concatenate([r_traj, final_r[None, ...]], axis=0)
+    v_traj = jnp.concatenate([v_traj, final_v[None, ...]], axis=0)
+    pi_traj = jnp.concatenate([pi_traj, final_pi[None, ...]], axis=0)
     return r_traj, v_traj, pi_traj
 
 
@@ -198,27 +221,24 @@ def v_loss(
         config
 ):
     K = config['model_rollout_length']
-    n = config['environment_rollout_length']
+    n = config['env_rollout_length']
     gamma = config['gamma']
-    chex.assert_shape(env_r_rollout, (config['model_rollout_length'] + config['environment_rollout_length'],))
-    chex.assert_shape(v_bootstraps, (config['model_rollout_length'],))
-    chex.assert_shape(model_v_rollout, (config['model_rollout_length'],))
+    # chex.assert_shape(env_r_rollout, (config['model_rollout_length'] + config['env_rollout_length'],))
+    # chex.assert_shape(v_bootstraps, (config['model_rollout_length'],))
+    # chex.assert_shape(model_v_rollout, (config['model_rollout_length'],))
 
-    def f(loss, k):
-        # TODO this indexing looks wrong.
-        env_r = env_r_rollout[k+1:k+n]
-        gamma_terms = np.array([gamma ** t for t in range(n-1)])
-        env_n_step = jnp.sum(env_r * gamma_terms, axis=0)
-        # These bootstraps should already be unscaled in the mcts phase.
-        unscaled_target = jax.lax.stop_gradient(env_n_step + gamma**n * v_bootstraps[k])
-        target = target_transform(unscaled_target)
-        categorical_target = get_categorical(target, config)
-        loss_term = _cross_entropy(categorical_target, model_v_rollout[k])
-        return loss + loss_term, target
+    r_stack = np.stack([np.arange(k+1, k+n+1) for k in range(0, K+1)])  # [K+1, n]
+    env_r = env_r_rollout[r_stack]  # [K+1, n]
+    v = v_bootstraps[np.arange(n+1, K+1+(n+1))]  # [K+1]
 
-    v_loss, targets = jax.lax.scan(f, 0.0, np.arange(K))
+    gamma_terms = np.array([gamma ** t for t in range(n)])  # [n]
+    env_n_step = jnp.sum(env_r * gamma_terms[None, :], axis=1)  # [K+1]
+    unscaled_target = jax.lax.stop_gradient(env_n_step + gamma**n * v)
+    target = jax.vmap(target_transform)(unscaled_target)
+    categorical_target = jax.vmap(get_categorical, (0, None), 0)(target, config)
+    loss_term = jax.vmap(_cross_entropy, (0, 0), 0)(categorical_target, model_v_rollout)  # [K+1]
+    return jnp.sum(loss_term, axis=0), target
 
-    return v_loss, targets
 
 
 def policy_loss(
@@ -243,20 +263,17 @@ def process_trajectories(
         search_v_traj: jnp.ndarray,  # ...
         config: common.Config,
 ):
-    # [back + K + n, 96, 96, 3] --> [K + n, back, 96, 96, 3]
-    num_hist = config['num_hist']
+    num_stack = config['num_stack']
     K, n = config['model_rollout_length'], config['env_rollout_length']
-    f = lambda t: (obs_traj[t:num_hist+t], a_traj[t:num_hist+t])
-    obs_traj = jax.vmap(f)(jnp.arange(0, K + n))  # ([K + n, back, 96, 96, 3], ...)
-    a_traj = a_traj[num_hist:]
-    r_traj = r_traj[num_hist:]
+    stack = np.stack([np.arange(t, num_stack+t) for t in range(K + n)])
+    obs_traj = obs_traj[stack, :, :, :]
+    first_obs = (obs_traj[0, :, :, :, :], a_traj[:num_stack])
+    a_traj = a_traj[num_stack:]
+    r_traj = r_traj[num_stack:]
     # TODO search_pi_traj is going to be weird. figure this out tomorrow.
-    search_pi_traj = search_pi_traj[num_hist:]
-    search_v_traj = search_v_traj[num_hist:]
-    return obs_traj, a_traj, r_traj, search_pi_traj, search_v_traj
-
-
-
+    search_pi_traj = search_pi_traj[num_stack:]
+    search_v_traj = search_v_traj[num_stack:]
+    return first_obs, a_traj, r_traj, search_pi_traj, search_v_traj
 
 
 def muzero_loss(
@@ -270,14 +287,15 @@ def muzero_loss(
         importance_weight: jnp.ndarray,  # []
         config: common.Config,
 ):
-    obs_traj, a_traj, r_traj, search_pi_traj, search_v_traj = process_trajectories(
+    first_obs, a_traj, r_traj, search_pi_traj, search_v_traj = process_trajectories(
         obs_traj, a_traj, r_traj, search_pi_traj, search_v_traj, config
     )
-    n, K = config['environment_rollout_length'], config['model_rollout_length']
+    n, K = config['env_rollout_length'], config['model_rollout_length']
     # each is [K, ...]
-    first_obs = tree_map(lambda x: x[0], obs_traj)
     model_r_traj, model_v_traj, model_pi_traj = rollout_model(
         muzero_params, muzero_comps, first_obs, a_traj[:K], config)
+    # K+1 terms for each
+
     r_loss_term = r_loss(r_traj, model_r_traj, config)
 
     #v_mcts = jax.vmap(mcts.run_and_get_value, (None, None, 0, None), 0)(
