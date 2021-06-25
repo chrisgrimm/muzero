@@ -48,22 +48,6 @@ def embed(
     x = ResidualBlock(256, 3)(x)
     x = hk.AvgPool((2, 2, 1), (2, 2, 1), 'SAME')(x)
     return x
-    # return hk.Sequential([
-    #     hk.Conv2D(128, 3, 2, padding='VALID'),
-    #     jax.nn.relu,
-    #     ResidualBlock(128, 3),
-    #     ResidualBlock(128, 3),
-    #     hk.Conv2D(256, 3, 2, padding='VALID'),
-    #     jax.nn.relu,
-    #     ResidualBlock(256, 3),
-    #     ResidualBlock(256, 3),
-    #     ResidualBlock(256, 3),
-    #     hk.AvgPool(2, 2, 'VALID'),
-    #     ResidualBlock(256, 3),
-    #     ResidualBlock(256, 3),
-    #     ResidualBlock(256, 3),
-    #     hk.AvgPool(2, 2, 'VALID'),
-    # ])(stacked)
 
 
 embed_t = hk.transform(embed)
@@ -96,7 +80,7 @@ def get_categorical(
 ):
     delta_z = (config['cat_max'] - config['cat_min']) / (config['num_cat'] - 1)
     bins = jnp.array([config['cat_min'] + i * delta_z for i in range(config['num_cat'])])
-    overlaps = jnp.abs(x[None] - bins[None, :])  # [num_bins]
+    overlaps = jnp.abs(x[None] - bins)  # [num_bins]
     return overlaps
 
 
@@ -204,7 +188,7 @@ def r_loss(
         model_r_rollout, # [K, num_bins]
         config
 ):
-    env_r_rollout = env_r_rollout[:config['model_rollout_length']]
+    env_r_rollout = env_r_rollout[:config['model_rollout_length']+1]
     cat_env_r_rollout = jax.vmap(get_categorical, (0, None), 0)(env_r_rollout, config)  # [K, num_bins]
     cross_ents = jax.vmap(_cross_entropy, (0, 0), 0)(cat_env_r_rollout, model_r_rollout)
     return jnp.sum(cross_ents, axis=0)
@@ -229,7 +213,7 @@ def v_loss(
 
     r_stack = np.stack([np.arange(k+1, k+n+1) for k in range(0, K+1)])  # [K+1, n]
     env_r = env_r_rollout[r_stack]  # [K+1, n]
-    v = v_bootstraps[np.arange(n+1, K+1+(n+1))]  # [K+1]
+    v = v_bootstraps[np.arange(n, K+1+n)]  # [K+1]
 
     gamma_terms = np.array([gamma ** t for t in range(n)])  # [n]
     env_n_step = jnp.sum(env_r * gamma_terms[None, :], axis=1)  # [K+1]
@@ -237,7 +221,7 @@ def v_loss(
     target = jax.vmap(target_transform)(unscaled_target)
     categorical_target = jax.vmap(get_categorical, (0, None), 0)(target, config)
     loss_term = jax.vmap(_cross_entropy, (0, 0), 0)(categorical_target, model_v_rollout)  # [K+1]
-    return jnp.sum(loss_term, axis=0), target
+    return jnp.sum(loss_term, axis=0), unscaled_target
 
 
 
@@ -246,11 +230,6 @@ def policy_loss(
         model_pi_rollout,
         config
 ):
-    K = config['model_rollout_length']
-    n = config['env_rollout_length']
-    A = config['num_actions']
-    chex.assert_shape(env_pi_rollout, (K, A))
-    chex.assert_shape(model_pi_rollout, (K, A))
     cross_entropies = jax.vmap(_cross_entropy, (0, 0), 0)(env_pi_rollout, model_pi_rollout)
     return jnp.sum(cross_entropies, axis=0)
 
@@ -264,15 +243,12 @@ def process_trajectories(
         config: common.Config,
 ):
     num_stack = config['num_stack']
-    K, n = config['model_rollout_length'], config['env_rollout_length']
-    stack = np.stack([np.arange(t, num_stack+t) for t in range(K + n)])
-    obs_traj = obs_traj[stack, :, :, :]
-    first_obs = (obs_traj[0, :, :, :, :], a_traj[:num_stack])
-    a_traj = a_traj[num_stack:]
-    r_traj = r_traj[num_stack:]
+    first_obs = (obs_traj[:num_stack, :, :, :], a_traj[:num_stack])
+    a_traj = a_traj[num_stack-1:]
+    r_traj = r_traj[num_stack-1:]
     # TODO search_pi_traj is going to be weird. figure this out tomorrow.
-    search_pi_traj = search_pi_traj[num_stack:]
-    search_v_traj = search_v_traj[num_stack:]
+    search_pi_traj = search_pi_traj[num_stack-1:]
+    search_v_traj = search_v_traj[num_stack-1:]
     return first_obs, a_traj, r_traj, search_pi_traj, search_v_traj
 
 
@@ -293,7 +269,7 @@ def muzero_loss(
     n, K = config['env_rollout_length'], config['model_rollout_length']
     # each is [K, ...]
     model_r_traj, model_v_traj, model_pi_traj = rollout_model(
-        muzero_params, muzero_comps, first_obs, a_traj[:K], config)
+        muzero_params, muzero_comps, first_obs, a_traj[1:K+1], config)
     # K+1 terms for each
 
     r_loss_term = r_loss(r_traj, model_r_traj, config)
@@ -305,7 +281,7 @@ def muzero_loss(
 
     #pi_traj = jax.vmap(mcts.run_and_get_policy, (None, None, 0, None, None), 0)(
     #    muzero_params, muzero_comps, key, obs_traj[:K], jnp.array(1.0), config)
-    pi_loss_term = policy_loss(search_pi_traj[:K], model_pi_traj, config)
+    pi_loss_term = policy_loss(search_pi_traj[:K+1], model_pi_traj, config)
 
     loss = (1 / K) * (r_loss_term + v_loss_term + pi_loss_term)
     loss = importance_weight * loss
