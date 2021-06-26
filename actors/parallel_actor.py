@@ -1,18 +1,14 @@
-import os
 from typing import NamedTuple, Callable, List, Tuple, Union
 
 import gym
-import jax
-import jax.numpy as jnp
 import jax.random as jrng
 import numpy as np
 import ray
 
 import common
 from environments import history_buffer
-from networks import mcts, muzero_functions
 from networks.jitted_muzero_functions import MuZeroActor
-from networks.muzero_functions import MuZeroParams, MuZeroComponents
+from networks.muzero_functions import MuZeroParams
 from environments.vec_env.subproc_vec_env import SubprocVecEnv
 from replay_buffers.trajectory_replay_buffer import TrajectoryReplayBuffer
 
@@ -35,6 +31,25 @@ class Reset(NamedTuple):
 ReplayConsumable = Union[Step, Reset]
 
 
+class ObsInfoEnv(gym.Env):
+
+    def __init__(self, env: gym.Env):
+        self._env = env
+
+    def step(self, action):
+        obs, r, a, info = self._env.step(action)
+        return obs, r, a, {'obs': np.array(obs), **info}
+
+    def reset(self):
+        return self._env.reset()
+
+    def observation_space(self):
+        return self._env.observation_space()
+
+    def action_space(self):
+        return self._env.action_space()
+
+
 @ray.remote
 class ParallelTrajectoryRunner:
 
@@ -52,7 +67,9 @@ class ParallelTrajectoryRunner:
         self._num_parallel = num_parallel
         self._trajs: List[List[ReplayConsumable]] = [[] for _ in range(num_parallel)]
 
-        self._env = SubprocVecEnv([env_fn for _ in range(num_parallel)])
+        mod_env_fn = lambda: ObsInfoEnv(env_fn())
+
+        self._env = SubprocVecEnv([mod_env_fn for _ in range(num_parallel)])
         self._histories = [history_buffer.create_history(config['num_stack']-1, config['num_actions'], (96, 96, 3))
                            for _ in range(num_parallel)]
         self._make_actor = make_actor
@@ -69,12 +86,11 @@ class ParallelTrajectoryRunner:
 
         actor_inp = (np.stack([hist.obs for hist in self._histories]),
                      np.stack([hist.a for hist in self._histories]))
-        #a_vec, pi_vec, value_vec = self._actor(self._muzero_params, key, actor_inp, self._temperature)
-        a_vec, pi_vec, value_vec = (np.zeros([self._num_parallel], dtype=np.uint8),
-                                    np.zeros([self._num_parallel, self._num_actions], dtype=np.float32),
-                                    np.zeros([self._num_parallel], dtype=np.float32))
+        a_vec, pi_vec, value_vec = self._actor(self._muzero_params, key, actor_inp, self._temperature)
+        #a_vec, pi_vec, value_vec = (np.zeros([self._num_parallel], dtype=np.uint8),
+        #                            np.zeros([self._num_parallel, self._num_actions], dtype=np.float32),
+        #                            np.zeros([self._num_parallel], dtype=np.float32))
         self._a_vec = a_vec
-
         for i, (obs, pi, v) in enumerate(zip(self._obs_vec, pi_vec, value_vec)):
             self._trajs[i].append(Reset(obs, pi, v))
 
@@ -85,21 +101,25 @@ class ParallelTrajectoryRunner:
             self._key, key = jrng.split(self._key, 2)
 
             # Step using the cached action and update the histories
-            self._obs_vec, r_vec, done_vec, _ = self._env.step(self._a_vec)
-            for i, (obs, a, r, done) in enumerate(zip(self._obs_vec, self._a_vec, r_vec, done_vec)):
+            self._obs_vec, r_vec, done_vec, info_vec = self._env.step(self._a_vec)
+
+            # history buffer controls what goes into the agent's observation
+            for i, (obs, a, r, done, info) in enumerate(zip(self._obs_vec, self._a_vec, r_vec, done_vec, info_vec)):
+                obs = info['obs']
                 self._histories[i] = history_buffer.step(self._histories[i], obs, a, r, done)
             # Get the next action from the actor.
             actor_inp = (np.stack([hist.obs for hist in self._histories]),
                          np.stack([hist.a for hist in self._histories]))
-            #a_vec, pi_vec, value_vec = self._actor(self._muzero_params, key, actor_inp, self._temperature)
-            a_vec, pi_vec, value_vec = (np.zeros([self._num_parallel], dtype=np.uint8),
-                                        np.zeros([self._num_parallel, self._num_actions], dtype=np.float32),
-                                        np.zeros([self._num_parallel], dtype=np.float32))
+            a_vec, pi_vec, value_vec = self._actor(self._muzero_params, key, actor_inp, self._temperature)
+            # a_vec, pi_vec, value_vec = (np.zeros([self._num_parallel], dtype=np.uint8),
+            #                             np.zeros([self._num_parallel, self._num_actions], dtype=np.float32),
+            #                             np.zeros([self._num_parallel], dtype=np.float32))
             reset_indices = []
             # Store the pi_vec and value_vec into Step objects and update trajectories
-            grouped = enumerate(zip(pi_vec, value_vec, self._a_vec, r_vec, self._obs_vec, done_vec))
-            for i, (pi, value, a, r, obs, done) in grouped:
-                exp = Step(obs, pi, value, a, r, done)
+            grouped = enumerate(zip(pi_vec, value_vec, self._a_vec, r_vec, self._obs_vec, done_vec, info_vec))
+            for i, (pi, value, a, r, obs, done, info) in grouped:
+                step_obs = info['obs']
+                exp = Step(step_obs, pi, value, a, r, done)
                 self._trajs[i].append(exp)
                 if done:
                     to_emit.append(self._trajs[i])
@@ -110,12 +130,12 @@ class ParallelTrajectoryRunner:
             if len(reset_indices):
                 actor_inp = (np.stack([self._histories[i].obs for i in reset_indices]),
                              np.stack([self._histories[i].a for i in reset_indices]))
-                #reset_a_vec, reset_pi_vec, reset_value_vec = self._actor(
-                #    self._muzero_params, key, actor_inp, self._temperature)
-                reset_a_vec, reset_pi_vec, reset_value_vec = (
-                    np.zeros([len(reset_indices)], dtype=np.uint8),
-                    np.zeros([len(reset_indices), self._num_actions], dtype=np.float32),
-                    np.zeros([len(reset_indices)], dtype=np.float32))
+                reset_a_vec, reset_pi_vec, reset_value_vec = self._actor(
+                    self._muzero_params, key, actor_inp, self._temperature)
+                # reset_a_vec, reset_pi_vec, reset_value_vec = (
+                #     np.zeros([len(reset_indices)], dtype=np.uint8),
+                #     np.zeros([len(reset_indices), self._num_actions], dtype=np.float32),
+                #     np.zeros([len(reset_indices)], dtype=np.float32))
                 for idx, reset_idx in enumerate(reset_indices):
                     self._trajs[reset_idx] = [Reset(self._obs_vec[reset_idx], reset_pi_vec[idx], reset_value_vec[idx])]
                     self._a_vec[reset_idx] = reset_a_vec[idx]
@@ -197,8 +217,10 @@ def compute_priority(
     for i, tt in enumerate(range(t+1, max_idx)):
         returns += g**i * traj[tt].r
     try:
+        # this can only fail if t is the last index.
         returns += g**(i+1) * traj[tt].search_value
     except IndexError:
+        # terminal states should have 0 value, so passing here is correct.
         pass
 
     return np.abs(vt - returns)
@@ -227,5 +249,5 @@ def feed_buffer(
                     a=elem.a,
                     r=elem.r,
                     done=elem.done,
-                    priority=(0 if elem.done else priority)
+                    priority=priority
                 )
