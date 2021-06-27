@@ -49,7 +49,7 @@ def main():
         'obs_shape': (96, 96, 3),
         'embedding_shape': (6, 6, 256),
         'num_actions': 18, #?
-        'num_simulations': 5,
+        'num_simulations': 1,
         'model_rollout_length': 5,
         'env_rollout_length': 10,
         'update_actor_params_every': 1000,
@@ -144,12 +144,12 @@ def main():
 
         if ts % config['train_agent_every'] == 0:
             samples = buffer.sample_traj(config['batch_size'], (-backward_frames, forward_frames))
-            loss, priorities, muzero_params, opt_state = muzero_train_fn(
+            loss, priorities, r_loss, v_loss, pi_loss, muzero_params, opt_state = muzero_train_fn(
                 muzero_params, opt_state,
                 samples['obs'], samples['a'], samples['r'], samples['search_pi'],
                 samples['search_v'], samples['importance_weights'])
             buffer.update_priorities(samples['indices'], priorities)
-            print(ts, 'loss!', loss)
+            print(ts, 'loss!', loss, r_loss, v_loss, pi_loss)
 
         if ts % config['eval_every'] == 0:
             eval_key, new_eval_key = jrng.split(eval_key)
