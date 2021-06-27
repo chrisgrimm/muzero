@@ -1,3 +1,4 @@
+import os
 import time
 
 import gym
@@ -7,6 +8,7 @@ import optax
 import ray
 
 import common
+import eval
 from actors import parallel_actor
 from environments.vec_env import atari_wrappers
 from networks import muzero_functions, jitted_muzero_functions
@@ -39,6 +41,8 @@ def get_temperature(
 
 def main():
 
+
+
     config = {
         'gamma': 0.997,
         'num_stack': 32,
@@ -62,6 +66,7 @@ def main():
         'num_training_steps': 1_000_000,
         'min_buffer_length': 1_000,
         'env_name': 'PongNoFrameskip-v4',
+        'eval_every': 100_000,
     }
 
     forward_frames = config['env_rollout_length'] + config['model_rollout_length'] + 1
@@ -82,7 +87,7 @@ def main():
     buffer = TrajectoryReplayBuffer(config['buffer_capacity'], buffer_spec, use_priority=True)
 
     key = jrng.PRNGKey(config['seed'])
-    key, muzero_init_key, runner_init_key = jrng.split(key, 3)
+    key, muzero_init_key, runner_init_key, eval_key = jrng.split(key, 3)
 
     muzero_params, muzero_comps = muzero_def.init_muzero(
         key=muzero_init_key,
@@ -108,9 +113,16 @@ def main():
         runner_init_key,
         config
     )
+
+    eval_env = muzero_wrap_atari(config['env_name'], eval=True)
+    eval_actor = jitted_muzero_functions.make_actor(muzero_comps, config)
+
     ts = 1
     while ts < config['num_training_steps'] + 1:
         trajectories, pa_handle = parallel_actor.get_if_ready(pa_handle)
+        traj_return = np.mean([eval.get_return(traj) for traj in trajectories])
+        print(ts, 'traj_return!', traj_return)
+
         parallel_actor.feed_buffer(trajectories, buffer, config)
 
         if len(buffer) < config['min_buffer_length']:
@@ -135,7 +147,12 @@ def main():
                 samples['obs'], samples['a'], samples['r'], samples['search_pi'],
                 samples['search_v'], samples['importance_weights'])
             buffer.update_priorities(samples['indices'], priorities)
-            print('loss!', loss)
+            print(ts, 'loss!', loss)
+
+        if ts % config['eval_agent_every'] == 0:
+            eval_key, new_eval_key = jrng.split(eval_key)
+            avg_return = eval.evaluate_agent(eval_env, eval_actor, new_eval_key, muzero_params, config)
+            print(ts, 'eval!', avg_return)
         ts += 1
 
 
@@ -144,7 +161,11 @@ def main():
 
 
 if __name__ == '__main__':
-    ray.init(local_mode=True)
+
+    os.environ['XLA_PYTHON_CLIENT_PREALLOCATE'] = 'false'
+    os.environ['RAY_BACKEND_LOG_LEVEL'] = 'error'
+
+    ray.init()
     try:
         main()
     finally:
