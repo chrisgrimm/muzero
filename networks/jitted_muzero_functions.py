@@ -16,7 +16,6 @@ from networks.muzero_def import MuZeroComponents, MuZeroParams
 
 MuZeroActor = Callable[[MuZeroParams, jrng.PRNGKey, Tuple[np.ndarray, np.ndarray], float], Tuple[np.ndarray, np.ndarray, np.ndarray]]
 
-
 def make_actor(
         muzero_comps: MuZeroComponents,
         config: common.Config,
@@ -39,7 +38,6 @@ def make_actor(
             temperature: float,
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         action, policy, value = act(muzero_params, key, tree_map(jnp.array, obs), jnp.array(temperature))
-        print('act!')
         return np.array(action), np.array(policy), np.array(value)
 
     return wrapped

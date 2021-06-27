@@ -49,7 +49,7 @@ def main():
         'obs_shape': (96, 96, 3),
         'embedding_shape': (6, 6, 256),
         'num_actions': 18, #?
-        'num_simulations': 50,
+        'num_simulations': 5,
         'model_rollout_length': 5,
         'env_rollout_length': 10,
         'update_actor_params_every': 1000,
@@ -62,7 +62,7 @@ def main():
         'cat_min': -300,
         'cat_max': 300,
         'learning_rate': 0.00025, # TODO this needs to be a schedule
-        'num_actors': 1,
+        'num_actors': 32,
         'num_training_steps': 1_000_000,
         'min_buffer_length': 1_000,
         'env_name': 'PongNoFrameskip-v4',
@@ -105,6 +105,7 @@ def main():
 
     muzero_train_fn = jitted_muzero_functions.make_train_function(muzero_comps, optimizer, config)
 
+
     pa_handle = parallel_actor.init_runner(
         config['num_actors'],
         lambda: muzero_wrap_atari(config['env_name'], eval=False),
@@ -129,7 +130,6 @@ def main():
 
         if len(buffer) < config['min_buffer_length']:
             # give the buffer some more time.
-            print(len(buffer))
             time.sleep(1)
             continue
 
@@ -151,7 +151,7 @@ def main():
             buffer.update_priorities(samples['indices'], priorities)
             print(ts, 'loss!', loss)
 
-        if ts % config['eval_agent_every'] == 0:
+        if ts % config['eval_every'] == 0:
             eval_key, new_eval_key = jrng.split(eval_key)
             avg_return = eval.evaluate_agent(eval_env, eval_actor, new_eval_key, muzero_params, config)
             print(ts, 'eval!', avg_return)
