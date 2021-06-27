@@ -120,8 +120,9 @@ def main():
     ts = 1
     while ts < config['num_training_steps'] + 1:
         trajectories, pa_handle = parallel_actor.get_if_ready(pa_handle)
-        traj_return = np.mean([eval.get_return(traj) for traj in trajectories])
-        print(ts, 'traj_return!', traj_return)
+        if len(trajectories) > 0:
+            traj_return = np.mean([eval.get_return(traj) for traj in trajectories])
+            print(ts, 'traj_return!', traj_return)
 
         parallel_actor.feed_buffer(trajectories, buffer, config)
 

@@ -87,9 +87,6 @@ class ParallelTrajectoryRunner:
         actor_inp = (np.stack([hist.obs for hist in self._histories]),
                      np.stack([hist.a for hist in self._histories]))
         a_vec, pi_vec, value_vec = self._actor(self._muzero_params, key, actor_inp, self._temperature)
-        #a_vec, pi_vec, value_vec = (np.zeros([self._num_parallel], dtype=np.uint8),
-        #                            np.zeros([self._num_parallel, self._num_actions], dtype=np.float32),
-        #                            np.zeros([self._num_parallel], dtype=np.float32))
         self._a_vec = a_vec
         for i, (obs, pi, v) in enumerate(zip(self._obs_vec, pi_vec, value_vec)):
             self._trajs[i].append(Reset(obs, pi, v))
@@ -111,9 +108,6 @@ class ParallelTrajectoryRunner:
             actor_inp = (np.stack([hist.obs for hist in self._histories]),
                          np.stack([hist.a for hist in self._histories]))
             a_vec, pi_vec, value_vec = self._actor(self._muzero_params, key, actor_inp, self._temperature)
-            # a_vec, pi_vec, value_vec = (np.zeros([self._num_parallel], dtype=np.uint8),
-            #                             np.zeros([self._num_parallel, self._num_actions], dtype=np.float32),
-            #                             np.zeros([self._num_parallel], dtype=np.float32))
             reset_indices = []
             # Store the pi_vec and value_vec into Step objects and update trajectories
             grouped = enumerate(zip(pi_vec, value_vec, self._a_vec, r_vec, self._obs_vec, done_vec, info_vec))
@@ -132,10 +126,6 @@ class ParallelTrajectoryRunner:
                              np.stack([self._histories[i].a for i in reset_indices]))
                 reset_a_vec, reset_pi_vec, reset_value_vec = self._actor(
                     self._muzero_params, key, actor_inp, self._temperature)
-                # reset_a_vec, reset_pi_vec, reset_value_vec = (
-                #     np.zeros([len(reset_indices)], dtype=np.uint8),
-                #     np.zeros([len(reset_indices), self._num_actions], dtype=np.float32),
-                #     np.zeros([len(reset_indices)], dtype=np.float32))
                 for idx, reset_idx in enumerate(reset_indices):
                     self._trajs[reset_idx] = [Reset(self._obs_vec[reset_idx], reset_pi_vec[idx], reset_value_vec[idx])]
                     self._a_vec[reset_idx] = reset_a_vec[idx]
