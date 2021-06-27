@@ -66,6 +66,7 @@ def main():
         'num_training_steps': 1_000_000,
         'min_buffer_length': 1_000,
         'env_name': 'PongNoFrameskip-v4',
+        'adam_eps': 0.01 / 32,
         'eval_every': 100_000,
     }
 
@@ -87,7 +88,7 @@ def main():
     buffer = TrajectoryReplayBuffer(config['buffer_capacity'], buffer_spec, use_priority=True)
 
     key = jrng.PRNGKey(config['seed'])
-    key, muzero_init_key, runner_init_key, eval_key = jrng.split(key, 3)
+    key, muzero_init_key, runner_init_key, eval_key = jrng.split(key, 4)
 
     muzero_params, muzero_comps = muzero_def.init_muzero(
         key=muzero_init_key,
