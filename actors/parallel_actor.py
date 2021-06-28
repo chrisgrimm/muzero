@@ -100,8 +100,6 @@ class ParallelTrajectoryRunner:
 
             # Step using the cached action and update the histories
             self._obs_vec, r_vec, done_vec, info_vec = self._env.step(self._a_vec)
-            if np.any(self._a_vec != 0):
-                print('got nonzero action!')
             # history buffer controls what goes into the agent's observation
             for i, (obs, a, r, done, info) in enumerate(zip(self._obs_vec, self._a_vec, r_vec, done_vec, info_vec)):
                 obs = info['obs']
@@ -186,7 +184,7 @@ def update_muzero_params(
         handle: RunnerHandle,
         muzero_params: MuZeroParams
 ) -> RunnerHandle:
-    ray.get(handle.runner.update_agent.remote(muzero_params))
+    handle.runner.update_agent.remote(muzero_params)
     return handle
 
 
@@ -194,7 +192,7 @@ def update_temperature(
         handle: RunnerHandle,
         temperature: float
 ) -> RunnerHandle:
-    ray.get(handle.runner.update_temperature.remote(temperature))
+    handle.runner.update_temperature.remote(temperature)
     return handle
 
 
