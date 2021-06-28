@@ -44,15 +44,15 @@ def main():
 
 
     config = {
-        'gamma': 0.997,
-        'num_stack': 32,
+        'gamma': 0.99,
+        'num_stack': 4,
         'obs_shape': (96, 96, 3),
         'embedding_shape': (6, 6, 256),
         'num_actions': 18, #?
-        'num_simulations': 50,
+        'num_simulations': 25,
         'model_rollout_length': 5,
         'env_rollout_length': 10,
-        'update_actor_params_every': 1000,
+        'update_actor_params_every': 100,
         'update_temperature_every': 1000,
         'train_agent_every': 1,
         'batch_size': 32,
@@ -67,7 +67,7 @@ def main():
         'min_buffer_length': 1_000,
         'env_name': 'BreakoutNoFrameskip-v4',
         'adam_eps': 0.01 / 32,
-        'eval_every': 100_000,
+        'eval_every': 1000_000,
     }
 
     forward_frames = config['env_rollout_length'] + config['model_rollout_length'] + 1
@@ -90,8 +90,8 @@ def main():
     key = jrng.PRNGKey(config['seed'])
     key, muzero_init_key, runner_init_key, eval_key = jrng.split(key, 4)
 
-    dummy_obs = (jnp.zeros((config['num_back'], *config['obs_shape']), dtype=jnp.uint8),
-                 jnp.zeros((config['num_back'],), dtype=jnp.uint8))
+    dummy_obs = (jnp.zeros((config['num_stack'], *config['obs_shape']), dtype=jnp.uint8),
+                 jnp.zeros((config['num_stack'],), dtype=jnp.uint8))
 
     muzero_params, muzero_comps = muzero_def.init_muzero(
         dummy_obs=dummy_obs,
@@ -157,7 +157,8 @@ def main():
                 samples['obs'], samples['a'], samples['r'], samples['search_pi'],
                 samples['search_v'], samples['importance_weights'])
             buffer.update_priorities(samples['indices'], priorities)
-            print(ts, 'loss!', len(buffer), loss, r_loss, v_loss, pi_loss)
+            if ts % 100 == 0:
+                print(ts, 'loss!', len(buffer), loss, r_loss, v_loss, pi_loss)
 
         if ts % config['eval_every'] == 0:
             eval_key, new_eval_key = jrng.split(eval_key)

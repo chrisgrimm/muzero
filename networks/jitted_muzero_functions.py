@@ -28,7 +28,7 @@ def make_actor(
             temperature: jnp.ndarray,
     ):
         batch_sample = jax.vmap(mcts.run_and_get_actor_quantities,
-                                (None, None, None, 0, None, None), (0, 0, 0))
+                                (None, None, None, 0, None, None), (0, 0, 0, 0))
         return batch_sample(muzero_params, muzero_comps, key, obs, temperature, config)
 
     def wrapped(
@@ -37,8 +37,8 @@ def make_actor(
             obs: Tuple[jnp.ndarray, jnp.ndarray],
             temperature: float,
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-        action, policy, value = act(muzero_params, key, tree_map(jnp.array, obs), jnp.array(temperature))
-        return np.array(action), np.array(policy), np.array(value)
+        action, policy, value, mcts_params = act(muzero_params, key, tree_map(jnp.array, obs), jnp.array(temperature))
+        return np.array(action), np.array(policy), np.array(value), tree_map(np.array, mcts_params)
 
     return wrapped
 

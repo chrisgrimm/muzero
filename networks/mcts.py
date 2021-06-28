@@ -79,10 +79,6 @@ def pick_action(
     term2 = (jnp.sum(mcts_params.N[node_idx, :], axis=0) + c2 + 1) / c2
     term2 = c1 + jnp.log(term2)
     max_term = mcts_params.Q[node_idx, :] + mcts_params.P[node_idx, :] * term1 * term2
-    # max_term = jax.lax.cond(node_idx != 0,
-    #                         lambda _: max_term,
-    #                         lambda _: id_print(max_term, what='max_term'),
-    #                         None)
     return jnp.argmax(max_term, axis=0)
 
 
@@ -279,4 +275,4 @@ def run_and_get_actor_quantities(
     mcts_params = run_mcts(obs, mcts_key, muzero_params, muzero_comps, config)
     policy = get_policy(mcts_params, temperature)
     action = jrng.choice(sample_key, config['num_actions'], p=policy)
-    return action, policy, get_value(mcts_params)
+    return action, policy, get_value(mcts_params), mcts_params
