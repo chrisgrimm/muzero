@@ -3,11 +3,11 @@ import time
 
 import gym
 import jax.random as jrng
+import jax.numpy as jnp
 import numpy as np
 import optax
 import ray
 
-import common
 import eval
 from actors import parallel_actor
 from environments.vec_env import atari_wrappers
@@ -49,7 +49,7 @@ def main():
         'obs_shape': (96, 96, 3),
         'embedding_shape': (6, 6, 256),
         'num_actions': 18, #?
-        'num_simulations': 10,
+        'num_simulations': 50,
         'model_rollout_length': 5,
         'env_rollout_length': 10,
         'update_actor_params_every': 1000,
@@ -91,13 +91,17 @@ def main():
     key, muzero_init_key, runner_init_key, eval_key = jrng.split(key, 4)
 
     muzero_params, muzero_comps = muzero_def.init_muzero(
+        dummy_obs=jnp.zeros(config['obs_shape'], dtype=np.uint8),
+        dummy_action=jnp.array(0, dtype=np.uint8),
         key=muzero_init_key,
         embed=muzero_functions.embed,
         reward=muzero_functions.reward,
         value=muzero_functions.value,
         policy=muzero_functions.policy,
         dynamics=muzero_functions.dynamics,
-        config=config
+        config=config,
+        process_reward=lambda x: muzero_functions.process_reward(x, config),
+        process_value=lambda x: muzero_functions.process_value(x, config),
     )
 
     optimizer = optax.adam(config['learning_rate'], eps=config['adam_eps'])

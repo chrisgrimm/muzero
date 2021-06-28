@@ -8,7 +8,6 @@ import common
 
 from typing import NamedTuple, Tuple
 
-from networks import muzero_functions
 from networks.muzero_def import MuZeroParams, MuZeroComponents
 
 
@@ -80,7 +79,10 @@ def pick_action(
     term2 = (jnp.sum(mcts_params.N[node_idx, :], axis=0) + c2 + 1) / c2
     term2 = c1 + jnp.log(term2)
     max_term = mcts_params.Q[node_idx, :] + mcts_params.P[node_idx, :] * term1 * term2
-    max_term = id_print(max_term, what='max_term')
+    # max_term = jax.lax.cond(node_idx != 0,
+    #                         lambda _: max_term,
+    #                         lambda _: id_print(max_term, what='max_term'),
+    #                         None)
     return jnp.argmax(max_term, axis=0)
 
 
@@ -127,11 +129,13 @@ def expand_leaf(
 
     key, *keys = jrng.split(key, 5)
     next_embedding = muzero_comps.dynamics.apply(muzero_params.dynamics, keys[0], embedding, action, config)
-    reward_cat = muzero_comps.reward.apply(muzero_params.reward, keys[1], next_embedding, config)
-    reward = muzero_functions.get_scalar(reward_cat, config)
-    value_cat = muzero_comps.value.apply(muzero_params.value, keys[2], next_embedding, config)
-    scaled_value = muzero_functions.get_scalar(value_cat, config)
-    value = muzero_functions.invert_target_transform(scaled_value)
+    unprocessed_reward = muzero_comps.reward.apply(muzero_params.reward, keys[1], next_embedding, config)
+    reward = muzero_comps.process_reward(unprocessed_reward)
+    # reward = muzero_functions.get_scalar(reward_cat, config)
+    unprocessed_value = muzero_comps.value.apply(muzero_params.value, keys[2], next_embedding, config)
+    value = muzero_comps.process_value(unprocessed_value)
+    # scaled_value = muzero_functions.get_scalar(value_cat, config)
+    # value = muzero_functions.invert_target_transform(scaled_value)
     policy = muzero_comps.policy.apply(muzero_params.policy, keys[3], next_embedding, config)
 
     expanded_idx = mcts_params.node_num + 1
@@ -193,6 +197,23 @@ def backup(
         Q=jax.ops.index_update(mcts_params.Q, jax.ops.index[rollout.nodes, rollout.actions], q_update)
     )
 
+# def print_rollout(
+#         rollout: MCTSRollout,
+#         mcts_params: MCTSParams,
+# ):
+#     print('---')
+#     for node, action, valid in zip(rollout.nodes, rollout.actions, rollout.valid):
+#         if not valid:
+#             break
+#         next_node = mcts_params.transitions[node, action]
+#         print('node', node)
+#         print('action', action)
+#         print('r', mcts_params.R[node, action])
+#         print('s\'', next_node)
+#         print('v(s\')', mcts_params.V[next_node])
+#     print('backup', mcts_params.Q[rollout.nodes[0]])
+#     print('---')
+
 
 def run_mcts(
         obs: Tuple[jnp.ndarray, jnp.ndarray],
@@ -208,6 +229,8 @@ def run_mcts(
         rollout = rollout_to_leaf(mcts_params, config)
         mcts_params = expand_leaf(mcts_params, muzero_params, muzero_comps, new_keys[0], rollout, config)
         mcts_params = backup(mcts_params, rollout, config)
+        # print_rollout(rollout, mcts_params)
+        #mcts_params = id_print(mcts_params.Q[0, :], result=mcts_params)
         return (mcts_params, key), None
 
     init_key, mcts_key = jrng.split(key)

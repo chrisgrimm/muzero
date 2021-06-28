@@ -51,9 +51,6 @@ def embed(
     return x
 
 
-embed_t = hk.transform(embed)
-
-
 def dynamics(
         state,
         action,
@@ -120,9 +117,6 @@ def reward(
     ])(state)
 
 
-reward_t = hk.transform(reward)
-
-
 def value(
         state,
         config
@@ -136,9 +130,6 @@ def value(
         hk.Linear(config['num_cat']),
         jax.nn.softmax
     ])(state)
-
-
-value_t = hk.transform(value)
 
 
 def policy(
@@ -156,7 +147,19 @@ def policy(
     ])(state)
 
 
-policy_t = hk.transform(policy)
+def process_reward(
+        reward_cat: jnp.ndarray,
+        config: common.Config
+):
+    return get_scalar(reward_cat, config)
+
+
+def process_value(
+        unscaled_value_cat: jnp.ndarray,
+        config: common.Config,
+):
+    unscaled_value = get_scalar(unscaled_value_cat, config)
+    return invert_target_transform(unscaled_value)
 
 
 def rollout_model(

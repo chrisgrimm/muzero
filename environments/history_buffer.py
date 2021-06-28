@@ -7,7 +7,6 @@ from gym.vector.utils import spaces
 
 from environments.vec_env import atari_wrappers
 
-
 class EnvHistory(NamedTuple):
     num_before: int
     num_actions: int
