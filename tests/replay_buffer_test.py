@@ -1,6 +1,7 @@
 import numpy as np
 
-from replay_buffers import trajectory_replay_buffer as trb
+from replay_buffers import trajectory_replay_buffer as trb, sum_tree
+
 
 def _set_up_buffer_no_priority():
     specs = [
@@ -106,6 +107,19 @@ def print_traj_nodes(buffer: trb.TrajectoryReplayBuffer):
         values.append(node.value)
         node = node.next
     print(values)
+
+
+
+def test_tree_depth():
+    tree = sum_tree.make_empty_tree()
+    max_in_tree = 100
+    for i in range(1000):
+        to_remove = i - max_in_tree
+        priority = np.random.uniform(0, 10)
+        tree = sum_tree.insert(i, priority, tree)
+        if to_remove >= 0:
+            tree = sum_tree.remove(i, tree)
+
 
 
 buffer = _set_up_buffer_no_priority()
