@@ -49,7 +49,7 @@ def main():
         'obs_shape': (96, 96, 3),
         'embedding_shape': (6, 6, 256),
         'num_actions': 18, #?
-        'num_simulations': 1,
+        'num_simulations': 10,
         'model_rollout_length': 5,
         'env_rollout_length': 10,
         'update_actor_params_every': 1000,
@@ -65,7 +65,7 @@ def main():
         'num_actors': 32,
         'num_training_steps': 1_000_000,
         'min_buffer_length': 1_000,
-        'env_name': 'PongNoFrameskip-v4',
+        'env_name': 'BreakoutNoFrameskip-v4',
         'adam_eps': 0.01 / 32,
         'eval_every': 100_000,
     }
@@ -144,12 +144,13 @@ def main():
 
         if ts % config['train_agent_every'] == 0:
             samples = buffer.sample_traj(config['batch_size'], (-backward_frames, forward_frames))
+            print('max_r', np.max(samples['r']))
             loss, priorities, r_loss, v_loss, pi_loss, muzero_params, opt_state = muzero_train_fn(
                 muzero_params, opt_state,
                 samples['obs'], samples['a'], samples['r'], samples['search_pi'],
                 samples['search_v'], samples['importance_weights'])
             buffer.update_priorities(samples['indices'], priorities)
-            print(ts, 'loss!', loss, r_loss, v_loss, pi_loss)
+            print(ts, 'loss!', len(buffer), loss, r_loss, v_loss, pi_loss)
 
         if ts % config['eval_every'] == 0:
             eval_key, new_eval_key = jrng.split(eval_key)

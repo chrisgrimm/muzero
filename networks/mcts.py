@@ -2,6 +2,7 @@ import jax
 import jax.ops
 import jax.numpy as jnp
 import jax.random as jrng
+from jax.experimental.host_callback import id_print
 import numpy as np
 import common
 
@@ -79,6 +80,7 @@ def pick_action(
     term2 = (jnp.sum(mcts_params.N[node_idx, :], axis=0) + c2 + 1) / c2
     term2 = c1 + jnp.log(term2)
     max_term = mcts_params.Q[node_idx, :] + mcts_params.P[node_idx, :] * term1 * term2
+    max_term = id_print(max_term, what='max_term')
     return jnp.argmax(max_term, axis=0)
 
 

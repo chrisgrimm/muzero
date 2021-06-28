@@ -2,6 +2,7 @@ from typing import NamedTuple, Callable, Mapping, Union, Tuple
 import common
 
 import jax
+from jax.experimental.host_callback import id_print
 import chex
 import haiku as hk
 import jax.numpy as jnp
@@ -80,7 +81,7 @@ def get_categorical(
 ):
     delta_z = (config['cat_max'] - config['cat_min']) / (config['num_cat'] - 1)
     bins = jnp.array([config['cat_min'] + i * delta_z for i in range(config['num_cat'])])
-    overlaps = jnp.abs(x[None] - bins)  # [num_bins]
+    overlaps = jnp.clip(1. - jnp.abs(x[None] - bins) / delta_z, 0, 1)  # [num_bins]
     return overlaps
 
 

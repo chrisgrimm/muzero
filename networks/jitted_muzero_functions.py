@@ -64,11 +64,11 @@ def make_train_function(
             search_v_traj: np.ndarray,
             importance_weights: np.ndarray,
     ) -> Tuple[np.ndarray, np.ndarray, MuZeroParams, optax.OptState]:
-        loss, priorities, opt_state, muzero_params = train(
+        loss, priorities, r_loss, v_loss, pi_loss, opt_state, muzero_params = train(
             muzero_params, opt_state,
             jnp.array(obs_traj), jnp.array(a_traj), jnp.array(r_traj),
             jnp.array(search_pi_traj), jnp.array(search_v_traj), jnp.array(importance_weights)
         )
-        return np.array(loss), np.array(priorities), muzero_params, opt_state
+        return np.array(loss), np.array(priorities), np.array(r_loss), np.array(v_loss), np.array(pi_loss), muzero_params, opt_state
 
     return wrapped

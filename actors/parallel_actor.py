@@ -81,7 +81,6 @@ class ParallelTrajectoryRunner:
 
         self._obs_vec = self._env.reset()
 
-        self._num_actions_taken = 0
 
         for i, obs in enumerate(self._obs_vec):
             self._histories[i] = history_buffer.reset(self._histories[i], obs)
@@ -101,8 +100,6 @@ class ParallelTrajectoryRunner:
 
             # Step using the cached action and update the histories
             self._obs_vec, r_vec, done_vec, info_vec = self._env.step(self._a_vec)
-            self._num_actions_taken += 1
-            print(self._num_actions_taken)
             # history buffer controls what goes into the agent's observation
             for i, (obs, a, r, done, info) in enumerate(zip(self._obs_vec, self._a_vec, r_vec, done_vec, info_vec)):
                 obs = info['obs']
