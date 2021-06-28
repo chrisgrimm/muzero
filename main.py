@@ -42,21 +42,19 @@ def get_temperature(
 def main():
 
 
-
     config = {
         'gamma': 0.99,
-        'num_stack': 4,
+        'num_stack': 32,
         'obs_shape': (96, 96, 3),
         'embedding_shape': (6, 6, 256),
-        'num_actions': 18, #?
-        'num_simulations': 25,
+        'num_simulations': 50,
         'model_rollout_length': 5,
         'env_rollout_length': 10,
         'update_actor_params_every': 100,
         'update_temperature_every': 1000,
         'train_agent_every': 1,
         'batch_size': 32,
-        'buffer_capacity': 1_000_000,
+        'buffer_capacity': 10_000,
         'seed': 1234,
         'num_cat': 601,
         'cat_min': -300,
@@ -67,8 +65,9 @@ def main():
         'min_buffer_length': 1_000,
         'env_name': 'BreakoutNoFrameskip-v4',
         'adam_eps': 0.01 / 32,
-        'eval_every': 1000_000,
+        'eval_every': 1_000_000,
     }
+    config['num_actions'] = muzero_wrap_atari(config['env_name']).action_space.n
 
     forward_frames = config['env_rollout_length'] + config['model_rollout_length'] + 1
     backward_frames = config['num_stack'] - 1
@@ -151,13 +150,12 @@ def main():
 
         if ts % config['train_agent_every'] == 0:
             samples = buffer.sample_traj(config['batch_size'], (-backward_frames, forward_frames))
-            print('max_r', np.max(samples['r']))
             loss, priorities, r_loss, v_loss, pi_loss, muzero_params, opt_state = muzero_train_fn(
                 muzero_params, opt_state,
                 samples['obs'], samples['a'], samples['r'], samples['search_pi'],
                 samples['search_v'], samples['importance_weights'])
             buffer.update_priorities(samples['indices'], priorities)
-            if ts % 100 == 0:
+            if ts % 10 == 0:
                 print(ts, 'loss!', len(buffer), loss, r_loss, v_loss, pi_loss)
 
         if ts % config['eval_every'] == 0:

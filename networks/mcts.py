@@ -71,39 +71,47 @@ def is_valid_node(
 
 def pick_action(
         mcts_params: MCTSParams,
+        key: jrng.PRNGKey,
         node_idx: int,
+        config: common.Config,
         c1: float = 1.25,
-        c2: float = 19_652
+        c2: float = 19_652,
 ):
     term1 = jnp.sqrt(jnp.sum(mcts_params.N[node_idx, :], axis=0, keepdims=True)) / (1 + mcts_params.N[node_idx, :])
     term2 = (jnp.sum(mcts_params.N[node_idx, :], axis=0) + c2 + 1) / c2
     term2 = c1 + jnp.log(term2)
     max_term = mcts_params.Q[node_idx, :] + mcts_params.P[node_idx, :] * term1 * term2
-    return jnp.argmax(max_term, axis=0)
+    max_dist = (max_term == jnp.max(max_term, axis=0)).astype(jnp.float32)
+    max_dist = max_dist / jnp.sum(max_dist, axis=0)
+    a = jrng.choice(key, config['num_actions'], p=max_dist)
+    return a 
 
 
 def rollout_to_leaf(
         mcts_params: MCTSParams,
+        key: jrng.PRNGKey,
         config: common.Config
 ) -> MCTSRollout:
     # check if state is leaf.
 
     def mcts_rollout(x, i):
-        node_idx, action, is_valid = x
+        node_idx, action, is_valid, key = x
 
+        key, new_key = jrng.split(key, 2)
         # log the output regardless of validity.
-        out = node_idx, action, is_valid
+        out = node_idx, action, is_valid 
         is_valid = is_valid & is_valid_node(mcts_params, node_idx, action)
 
         # come up with new state and action.
         next_node_idx = next_state(mcts_params, node_idx, action)
-        next_action = pick_action(mcts_params, next_node_idx)
+        next_action = pick_action(mcts_params, new_key, next_node_idx, config)
 
-        return (next_node_idx, next_action, is_valid), out
+        return (next_node_idx, next_action, is_valid, key), out
 
-    node_idx, action = 0, pick_action(mcts_params, 0)
+    key, action_key = jrng.split(key)
+    node_idx, action = 0, pick_action(mcts_params, action_key, 0, config)
     _, (path_indices, path_actions, is_valid) = jax.lax.scan(
-        mcts_rollout, (node_idx, action, True), jnp.arange(config['num_simulations']))
+        mcts_rollout, (node_idx, action, True, key), jnp.arange(config['num_simulations']))
     return MCTSRollout(
         nodes=path_indices,
         actions=path_actions,
@@ -221,9 +229,9 @@ def run_mcts(
 
     def f(carry, i):
         mcts_params, key = carry
-        key, *new_keys = jrng.split(key, 2)
-        rollout = rollout_to_leaf(mcts_params, config)
-        mcts_params = expand_leaf(mcts_params, muzero_params, muzero_comps, new_keys[0], rollout, config)
+        key, rollout_key, expand_key = jrng.split(key, 3)
+        rollout = rollout_to_leaf(mcts_params, rollout_key, config)
+        mcts_params = expand_leaf(mcts_params, muzero_params, muzero_comps, expand_key, rollout, config)
         mcts_params = backup(mcts_params, rollout, config)
         # print_rollout(rollout, mcts_params)
         #mcts_params = id_print(mcts_params.Q[0, :], result=mcts_params)
