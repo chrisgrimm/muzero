@@ -90,8 +90,11 @@ def main():
     key = jrng.PRNGKey(config['seed'])
     key, muzero_init_key, runner_init_key, eval_key = jrng.split(key, 4)
 
+    dummy_obs = (jnp.zeros((config['num_back'], *config['obs_shape']), dtype=jnp.uint8),
+                 jnp.zeros((config['num_back'],), dtype=jnp.uint8))
+
     muzero_params, muzero_comps = muzero_def.init_muzero(
-        dummy_obs=jnp.zeros(config['obs_shape'], dtype=np.uint8),
+        dummy_obs=dummy_obs,
         dummy_action=jnp.array(0, dtype=np.uint8),
         key=muzero_init_key,
         embed=muzero_functions.embed,
