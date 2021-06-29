@@ -43,6 +43,44 @@ def make_actor(
     return wrapped
 
 
+def make_multi_gpu_actor(
+        muzero_comps: MuZeroComponents,
+        num_gpus: int,
+        config: common.Config,
+) -> MuZeroActor:
+
+    def _split(x):
+        splits = [x[i::num_gpus][None, ...] for i in range(num_gpus)]
+        return jnp.concatenate(splits, axis=0)
+
+    def _join(x):
+        return jnp.concatenate([x[i] for i in range(num_gpus)], axis=0) 
+
+    @jax.jit
+    def act(
+            muzero_params: MuZeroParams,
+            key: jrng.PRNGKey,
+            obs: Tuple[jnp.ndarray, jnp.ndarray],
+            temperature: jnp.ndarray,
+    ):
+        batch_sample = jax.vmap(lambda muzero_params, key, obs, temp:  mcts.run_and_get_actor_quantities(muzero_params, muzero_comps, key, obs, temperature, config),
+                                (None, None, 0, None), (0, 0, 0, 0))
+        batch_sample = jax.pmap(batch_sample, in_axes=(None, None, 0, None), out_axes=(0, 0, 0, 0))
+        action, policy, value, mcts_params = batch_sample(muzero_params, key, tree_map(_split, obs), temperature)
+        return _join(action), _join(policy), _join(value), tree_map(_join, mcts_params)
+
+
+    def wrapped(
+            muzero_params: MuZeroParams,
+            key: jrng.PRNGKey,
+            obs: Tuple[jnp.ndarray, jnp.ndarray],
+            temperature: float,
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        action, policy, value, mcts_params = act(muzero_params, key, tree_map(jnp.array, obs), jnp.array(temperature))
+        return np.array(action), np.array(policy), np.array(value), tree_map(np.array, mcts_params)
+
+    return wrapped
+
 def make_train_function(
         muzero_comps: MuZeroComponents,
         optimizer: optax.GradientTransformation,

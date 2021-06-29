@@ -50,7 +50,7 @@ class ObsInfoEnv(gym.Env):
         return self._env.action_space()
 
 
-@ray.remote(num_gpus=1)
+@ray.remote(num_gpus=4)
 class ParallelTrajectoryRunner:
 
     def __init__(
@@ -72,7 +72,6 @@ class ParallelTrajectoryRunner:
         self._env = SubprocVecEnv([mod_env_fn for _ in range(num_parallel)])
         self._histories = [history_buffer.create_history(config['num_stack']-1, config['num_actions'], (96, 96, 3))
                            for _ in range(num_parallel)]
-        self._make_actor = make_actor
         self._actor = make_actor()
         self._muzero_params = muzero_params
         self._key = key
@@ -100,6 +99,7 @@ class ParallelTrajectoryRunner:
 
             # Step using the cached action and update the histories
             self._obs_vec, r_vec, done_vec, info_vec = self._env.step(self._a_vec)
+            print('boop', j)
             # history buffer controls what goes into the agent's observation
             for i, (obs, a, r, done, info) in enumerate(zip(self._obs_vec, self._a_vec, r_vec, done_vec, info_vec)):
                 obs = info['obs']
