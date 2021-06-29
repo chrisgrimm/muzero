@@ -283,4 +283,4 @@ def run_and_get_actor_quantities(
     mcts_params = run_mcts(obs, mcts_key, muzero_params, muzero_comps, config)
     policy = get_policy(mcts_params, temperature)
     action = jrng.choice(sample_key, config['num_actions'], p=policy)
-    return action, policy, get_value(mcts_params), mcts_params
+    return action, policy, get_value(mcts_params)

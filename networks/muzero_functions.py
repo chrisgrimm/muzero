@@ -289,7 +289,7 @@ def muzero_loss(
 
     loss = (1 / K) * (r_loss_term + v_loss_term + pi_loss_term)
     loss = importance_weight * loss
-    return loss, (new_priority, r_loss_term, v_loss_term, pi_loss_term)
+    return loss, (new_priority, r_loss_term, v_loss_term, pi_loss_term, targets[0])
 
 
 def train_muzero(
@@ -308,12 +308,14 @@ def train_muzero(
     batched_loss = jax.vmap(muzero_loss, (None, None, 0, 0, 0, 0, 0, 0, None), (0, 0))
 
     def batched_loss(*args, batched_loss=batched_loss):
-        loss, (priorities, r_loss, v_loss, pi_loss) = batched_loss(*args)
-        return jnp.mean(loss, axis=0), (priorities, jnp.mean(r_loss, axis=0), jnp.mean(v_loss, axis=0), jnp.mean(pi_loss, axis=0))
+        loss, (priorities, r_loss, v_loss, pi_loss, targets) = batched_loss(*args)
+        return jnp.mean(loss, axis=0), (
+            priorities, jnp.mean(r_loss, axis=0), jnp.mean(v_loss, axis=0),
+            jnp.mean(pi_loss, axis=0), jnp.mean(targets, axis=0))
 
-    (loss, (priorities, r_loss, v_loss, pi_loss)), grads = jax.value_and_grad(batched_loss, has_aux=True)(
+    (loss, (priorities, r_loss, v_loss, pi_loss, targets)), grads = jax.value_and_grad(batched_loss, has_aux=True)(
         muzero_params, muzero_comps,
         obs_traj, a_traj, r_traj, search_pi_traj, search_v_traj, importance_weights, config)
     updates, opt_state = optimizer.update(grads, opt_state, muzero_params)
     muzero_params = optax.apply_updates(muzero_params, updates)
-    return loss, priorities, r_loss, v_loss, pi_loss, opt_state, muzero_params
+    return loss, priorities, r_loss, v_loss, pi_loss, targets, opt_state, muzero_params

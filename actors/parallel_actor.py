@@ -50,7 +50,7 @@ class ObsInfoEnv(gym.Env):
         return self._env.action_space()
 
 
-@ray.remote(num_gpus=1)
+@ray.remote(num_gpus=4)
 class ParallelTrajectoryRunner:
 
     def __init__(
@@ -72,7 +72,6 @@ class ParallelTrajectoryRunner:
         self._env = SubprocVecEnv([mod_env_fn for _ in range(num_parallel)])
         self._histories = [history_buffer.create_history(config['num_stack']-1, config['num_actions'], (96, 96, 3))
                            for _ in range(num_parallel)]
-        self._make_actor = make_actor
         self._actor = make_actor()
         self._muzero_params = muzero_params
         self._key = key
@@ -87,7 +86,7 @@ class ParallelTrajectoryRunner:
 
         actor_inp = (np.stack([hist.obs for hist in self._histories]),
                      np.stack([hist.a for hist in self._histories]))
-        a_vec, pi_vec, value_vec, _ = self._actor(self._muzero_params, key, actor_inp, self._temperature)
+        a_vec, pi_vec, value_vec = self._actor(self._muzero_params, key, actor_inp, self._temperature)
         self._a_vec = a_vec
         for i, (obs, pi, v) in enumerate(zip(self._obs_vec, pi_vec, value_vec)):
             self._trajs[i].append(Reset(obs, pi, v))
@@ -100,6 +99,7 @@ class ParallelTrajectoryRunner:
 
             # Step using the cached action and update the histories
             self._obs_vec, r_vec, done_vec, info_vec = self._env.step(self._a_vec)
+            print('boop', j)
             # history buffer controls what goes into the agent's observation
             for i, (obs, a, r, done, info) in enumerate(zip(self._obs_vec, self._a_vec, r_vec, done_vec, info_vec)):
                 obs = info['obs']
@@ -107,10 +107,8 @@ class ParallelTrajectoryRunner:
             # Get the next action from the actor.
             actor_inp = (np.stack([hist.obs for hist in self._histories]),
                          np.stack([hist.a for hist in self._histories]))
-            a_vec, pi_vec, value_vec, mcts_params_vec = self._actor(self._muzero_params, key, actor_inp, self._temperature)
-            if j % 100 == 0:
-                print(mcts_params_vec.Q.shape)
-                print('mcts_q', np.mean(mcts_params_vec.Q[:, 0, :], axis=0))
+            a_vec, pi_vec, value_vec = self._actor(
+                self._muzero_params, key, actor_inp, self._temperature)
             reset_indices = []
             # Store the pi_vec and value_vec into Step objects and update trajectories
             grouped = enumerate(zip(pi_vec, value_vec, self._a_vec, r_vec, self._obs_vec, done_vec, info_vec))
@@ -127,7 +125,7 @@ class ParallelTrajectoryRunner:
             if len(reset_indices):
                 actor_inp = (np.stack([self._histories[i].obs for i in reset_indices]),
                              np.stack([self._histories[i].a for i in reset_indices]))
-                reset_a_vec, reset_pi_vec, reset_value_vec, _ = self._actor(
+                reset_a_vec, reset_pi_vec, reset_value_vec = self._actor(
                     self._muzero_params, key, actor_inp, self._temperature)
                 for idx, reset_idx in enumerate(reset_indices):
                     self._trajs[reset_idx] = [Reset(self._obs_vec[reset_idx], reset_pi_vec[idx], reset_value_vec[idx])]

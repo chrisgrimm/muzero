@@ -1,12 +1,15 @@
 import os
+import sys
 import time
 
 import gym
+import jax
 import jax.random as jrng
 import jax.numpy as jnp
 import numpy as np
 import optax
 import ray
+from ray import tune
 
 import eval
 from actors import parallel_actor
@@ -41,35 +44,11 @@ def get_temperature(
         return 0.25
     
 
-def main():
+def main(config):
 
+    actor_device, learner_device = jax.devices()
+    print(actor_device, learner_device)
 
-    config = {
-        'gamma': 0.99,
-        #'num_stack': 32,
-        'num_stack': 4,
-        'obs_shape': (96, 96, 1),
-        'embedding_shape': (6, 6, 256),
-        'num_simulations': 50,
-        'model_rollout_length': 5,
-        'env_rollout_length': 10,
-        'update_actor_params_every': 100,
-        'update_temperature_every': 1000,
-        'train_agent_every': 1,
-        'batch_size': 32,
-        'buffer_capacity': 10_000,
-        'seed': 1234,
-        'num_cat': 601,
-        'cat_min': -300,
-        'cat_max': 300,
-        'learning_rate': 0.00025, # TODO this needs to be a schedule
-        'num_actors': 512,
-        'num_training_steps': 1_000_000,
-        'min_buffer_length': 1_000,
-        'env_name': 'BreakoutNoFrameskip-v4',
-        'adam_eps': 0.01 / 32,
-        'eval_every': 1_000_000,
-    }
     config['num_actions'] = muzero_wrap_atari(config['env_name']).action_space.n
 
     forward_frames = config['env_rollout_length'] + config['model_rollout_length'] + 1
@@ -112,27 +91,39 @@ def main():
     optimizer = optax.adam(config['learning_rate'], eps=config['adam_eps'])
     opt_state = optimizer.init(muzero_params)
 
-    muzero_train_fn = jitted_muzero_functions.make_train_function(muzero_comps, optimizer, config)
+    muzero_train_fn = jitted_muzero_functions.make_train_function(muzero_comps, optimizer, learner_device, config)
 
 
     pa_handle = parallel_actor.init_runner(
         config['num_actors'],
         lambda: muzero_wrap_atari(config['env_name'], eval=False),
         muzero_params,
-        lambda: jitted_muzero_functions.make_actor(muzero_comps, config),
+        lambda: jitted_muzero_functions.make_actor(muzero_comps, actor_device, config),
         get_temperature(0),
         runner_init_key,
         config
     )
 
     eval_env = muzero_wrap_atari(config['env_name'], eval=True)
-    eval_actor = jitted_muzero_functions.make_actor(muzero_comps, config)
+    eval_actor = jitted_muzero_functions.make_actor(muzero_comps, actor_device, config)
 
     ts = 1
     while ts < config['num_training_steps'] + 1:
+        send_report = False
+        to_report = {
+            'ts': ts,
+            'r_loss': np.nan,
+            'pi_loss': np.nan,
+            'v_loss': np.nan,
+            'value': np.nan,
+            'returns': np.nan,
+        }
+
         trajectories, pa_handle = parallel_actor.get_if_ready(pa_handle)
         if len(trajectories) > 0:
             traj_return = np.mean([eval.get_return(traj) for traj in trajectories])
+            send_report = True
+            to_report['returns'] = traj_return
             print(ts, 'traj_return!', traj_return)
 
         parallel_actor.feed_buffer(trajectories, buffer, config)
@@ -153,19 +144,29 @@ def main():
 
         if ts % config['train_agent_every'] == 0:
             samples = buffer.sample_traj(config['batch_size'], (-backward_frames, forward_frames))
-            loss, priorities, r_loss, v_loss, pi_loss, muzero_params, opt_state = muzero_train_fn(
+            loss, priorities, r_loss, v_loss, pi_loss, value, muzero_params, opt_state = muzero_train_fn(
                 muzero_params, opt_state,
                 samples['obs'], samples['a'], samples['r'], samples['search_pi'],
                 samples['search_v'], samples['importance_weights'])
             buffer.update_priorities(samples['indices'], priorities)
             if ts % 10 == 0:
-                print(ts, 'loss!', len(buffer), loss, r_loss, v_loss, pi_loss)
+                print(f'({ts}): {len(buffer)}\t\t{r_loss}\t\t{v_loss}\t\t{pi_loss}\t\t{value}')
+                to_report['r_loss'] = r_loss
+                to_report['v_loss'] = v_loss
+                to_report['pi_loss'] = pi_loss
+                to_report['value'] = value
+                send_report = True
 
-        if ts % config['eval_every'] == 0:
-            eval_key, new_eval_key = jrng.split(eval_key)
-            avg_return = eval.evaluate_agent(eval_env, eval_actor, new_eval_key, muzero_params, config)
-            print(ts, 'eval!', avg_return)
+        # if ts % config['eval_every'] == 0:
+        #     eval_key, new_eval_key = jrng.split(eval_key)
+        #     avg_return = eval.evaluate_agent(eval_env, eval_actor, new_eval_key, muzero_params, config)
+        #     print(ts, 'eval!', avg_return)
+
+        if send_report:
+            tune.report(**to_report)
+
         ts += 1
+
 
 
 
@@ -177,9 +178,48 @@ if __name__ == '__main__':
     os.environ['XLA_PYTHON_CLIENT_PREALLOCATE'] = 'false'
     os.environ['RAY_BACKEND_LOG_LEVEL'] = 'error'
 
+    config = {
+        'gamma': 0.99,
+        # 'num_stack': 32,
+        'num_stack': 4,
+        'obs_shape': (96, 96, 1),
+        'embedding_shape': (6, 6, 256),
+        'num_simulations': 50,
+        'model_rollout_length': 5,
+        'env_rollout_length': 10,
+        'update_actor_params_every': 1000,
+        'update_temperature_every': 1000,
+        'train_agent_every': 1,
+        'batch_size': 32,
+        'buffer_capacity': 1_000_000,
+        'seed': 1234,
+        'num_cat': 601,
+        'cat_min': -300,
+        'cat_max': 300,
+        'learning_rate': 0.00025,  # TODO this needs to be a schedule
+        'num_actors': 512,
+        'num_training_steps': 1_000_000,
+        'min_buffer_length': 50_000,
+        'env_name': 'BreakoutNoFrameskip-v4',
+        'adam_eps': 0.01 / 32,
+        'eval_every': 1_000_000,
+    }
+
+    main(config)
+    local_dir = sys.argv[1]
+
+    analysis = tune.run(main,
+                        num_samples=1,
+                        config=config,
+                        local_dir=os.path.join(local_dir, f'ray_muzero'),
+                        resources_per_trial={'cpu': 20, 'gpu': 2.0},
+                        fail_fast=True)
+    exp_dir = analysis._experiment_dir
+    print(exp_dir)
+
     ray.init()
     try:
-        main()
+        main(config)
     finally:
         ray.shutdown()
 
