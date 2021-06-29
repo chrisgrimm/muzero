@@ -46,8 +46,7 @@ def get_temperature(
 
 def main(config):
 
-    actor_device, learner_device = jax.devices()
-    print(actor_device, learner_device)
+    actor_device_id, learner_device_id = [x.id for x in jax.devices()]
 
     config['num_actions'] = muzero_wrap_atari(config['env_name']).action_space.n
 
@@ -91,21 +90,21 @@ def main(config):
     optimizer = optax.adam(config['learning_rate'], eps=config['adam_eps'])
     opt_state = optimizer.init(muzero_params)
 
-    muzero_train_fn = jitted_muzero_functions.make_train_function(muzero_comps, optimizer, learner_device, config)
+    muzero_train_fn = jitted_muzero_functions.make_train_function(muzero_comps, optimizer, learner_device_id, config)
 
 
     pa_handle = parallel_actor.init_runner(
         config['num_actors'],
         lambda: muzero_wrap_atari(config['env_name'], eval=False),
         muzero_params,
-        lambda: jitted_muzero_functions.make_actor(muzero_comps, actor_device, config),
+        lambda: jitted_muzero_functions.make_actor(muzero_comps, actor_device_id, config),
         get_temperature(0),
         runner_init_key,
         config
     )
 
     eval_env = muzero_wrap_atari(config['env_name'], eval=True)
-    eval_actor = jitted_muzero_functions.make_actor(muzero_comps, actor_device, config)
+    eval_actor = jitted_muzero_functions.make_actor(muzero_comps, actor_device_id, config)
 
     ts = 1
     while ts < config['num_training_steps'] + 1:

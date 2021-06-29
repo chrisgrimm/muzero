@@ -1,7 +1,6 @@
 from typing import Tuple, Callable
 
 import optax
-from jax._src.lax.lax import xc
 
 from networks import muzero_functions
 import common
@@ -19,10 +18,12 @@ MuZeroActor = Callable[[MuZeroParams, jrng.PRNGKey, Tuple[np.ndarray, np.ndarray
 
 def make_actor(
         muzero_comps: MuZeroComponents,
-        device: xc.Device,
+        device_id: int,
         config: common.Config,
 ) -> MuZeroActor:
-    @jax.jit(device=device)
+
+    device = {x.id: x for x in jax.devices()}[device_id]
+
     def act(
             muzero_params: MuZeroParams,
             key: jrng.PRNGKey,
@@ -87,9 +88,11 @@ def make_multi_gpu_actor(
 def make_train_function(
         muzero_comps: MuZeroComponents,
         optimizer: optax.GradientTransformation,
-        device: xc.Device,
+        device_id: int,
         config: common.Config
 ):
+    device = {x.id: x for x in jax.devices()}[device_id]
+
     def train(muzero_params, opt_state, obs_traj, a_traj, r_traj, search_pi_traj, search_v_traj, importance_weights):
         return muzero_functions.train_muzero(muzero_params, muzero_comps, opt_state, optimizer,
                                              obs_traj, a_traj, r_traj, search_pi_traj, search_v_traj, importance_weights,
