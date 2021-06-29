@@ -46,8 +46,6 @@ def get_temperature(
 
 def main(config):
 
-    actor_device_id, learner_device_id = [x.id for x in jax.devices()]
-
     config['num_actions'] = muzero_wrap_atari(config['env_name']).action_space.n
 
     forward_frames = config['env_rollout_length'] + config['model_rollout_length'] + 1
@@ -90,21 +88,21 @@ def main(config):
     optimizer = optax.adam(config['learning_rate'], eps=config['adam_eps'])
     opt_state = optimizer.init(muzero_params)
 
-    muzero_train_fn = jitted_muzero_functions.make_train_function(muzero_comps, optimizer, learner_device_id, config)
+    muzero_train_fn = jitted_muzero_functions.make_train_function(muzero_comps, optimizer, config)
 
 
     pa_handle = parallel_actor.init_runner(
         config['num_actors'],
         lambda: muzero_wrap_atari(config['env_name'], eval=False),
         muzero_params,
-        lambda: jitted_muzero_functions.make_actor(muzero_comps, actor_device_id, config),
+        lambda: jitted_muzero_functions.make_actor(muzero_comps, config),
         get_temperature(0),
         runner_init_key,
         config
     )
 
     eval_env = muzero_wrap_atari(config['env_name'], eval=True)
-    eval_actor = jitted_muzero_functions.make_actor(muzero_comps, actor_device_id, config)
+    eval_actor = jitted_muzero_functions.make_actor(muzero_comps, config)
 
     ts = 1
     while ts < config['num_training_steps'] + 1:
@@ -129,6 +127,7 @@ def main(config):
 
         if len(buffer) < config['min_buffer_length']:
             # give the buffer some more time.
+            print(f'filling buffer... {len(buffer)}/{config["min_buffer_length"]}')
             time.sleep(1)
             continue
 
@@ -204,21 +203,13 @@ if __name__ == '__main__':
         'eval_every': 1_000_000,
     }
 
-    main(config)
     local_dir = sys.argv[1]
 
     analysis = tune.run(main,
                         num_samples=1,
                         config=config,
                         local_dir=os.path.join(local_dir, f'ray_muzero'),
-                        resources_per_trial={'cpu': 20, 'gpu': 2.0},
+                        resources_per_trial={'cpu': 20, 'gpu': 1.0, 'extra_gpu': 1.0},
                         fail_fast=True)
     exp_dir = analysis._experiment_dir
     print(exp_dir)
-
-    ray.init()
-    try:
-        main(config)
-    finally:
-        ray.shutdown()
-

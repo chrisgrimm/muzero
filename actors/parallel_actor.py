@@ -50,7 +50,7 @@ class ObsInfoEnv(gym.Env):
         return self._env.action_space()
 
 
-@ray.remote(num_gpus=4)
+@ray.remote(num_gpus=1)
 class ParallelTrajectoryRunner:
 
     def __init__(
@@ -99,7 +99,6 @@ class ParallelTrajectoryRunner:
 
             # Step using the cached action and update the histories
             self._obs_vec, r_vec, done_vec, info_vec = self._env.step(self._a_vec)
-            print('boop', j)
             # history buffer controls what goes into the agent's observation
             for i, (obs, a, r, done, info) in enumerate(zip(self._obs_vec, self._a_vec, r_vec, done_vec, info_vec)):
                 obs = info['obs']

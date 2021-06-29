@@ -18,11 +18,8 @@ MuZeroActor = Callable[[MuZeroParams, jrng.PRNGKey, Tuple[np.ndarray, np.ndarray
 
 def make_actor(
         muzero_comps: MuZeroComponents,
-        device_id: int,
         config: common.Config,
 ) -> MuZeroActor:
-
-    device = {x.id: x for x in jax.devices()}[device_id]
 
     def act(
             muzero_params: MuZeroParams,
@@ -31,9 +28,9 @@ def make_actor(
             temperature: jnp.ndarray,
     ):
         batch_sample = jax.vmap(mcts.run_and_get_actor_quantities,
-                                (None, None, None, 0, None, None), (0, 0, 0))
+                                (None, None, 0, 0, None, None), (0, 0, 0))
         return batch_sample(muzero_params, muzero_comps, key, obs, temperature, config)
-    act_j = jax.jit(act, device=device)
+    act_j = jax.jit(act)
 
     def wrapped(
             muzero_params: MuZeroParams,
@@ -41,7 +38,7 @@ def make_actor(
             obs: Tuple[jnp.ndarray, jnp.ndarray],
             temperature: float,
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-        action, policy, value = act_j(muzero_params, key, tree_map(jnp.array, obs), jnp.array(temperature))
+        action, policy, value = act_j(muzero_params, jrng.split(key, len(obs[0])), tree_map(jnp.array, obs), jnp.array(temperature))
         return np.array(action), np.array(policy), np.array(value)
 
     return wrapped
@@ -67,6 +64,7 @@ def make_multi_gpu_actor(
             obs: Tuple[jnp.ndarray, jnp.ndarray],
             temperature: jnp.ndarray,
     ):
+        
         batch_sample = jax.vmap(lambda muzero_params, key, obs, temp:  mcts.run_and_get_actor_quantities(muzero_params, muzero_comps, key, obs, temperature, config),
                                 (None, None, 0, None), (0, 0, 0, 0))
         batch_sample = jax.pmap(batch_sample, in_axes=(None, None, 0, None), out_axes=(0, 0, 0, 0))
@@ -88,16 +86,14 @@ def make_multi_gpu_actor(
 def make_train_function(
         muzero_comps: MuZeroComponents,
         optimizer: optax.GradientTransformation,
-        device_id: int,
         config: common.Config
 ):
-    device = {x.id: x for x in jax.devices()}[device_id]
 
     def train(muzero_params, opt_state, obs_traj, a_traj, r_traj, search_pi_traj, search_v_traj, importance_weights):
         return muzero_functions.train_muzero(muzero_params, muzero_comps, opt_state, optimizer,
                                              obs_traj, a_traj, r_traj, search_pi_traj, search_v_traj, importance_weights,
                                              config)
-    train_j = jax.jit(train, device=device)
+    train_j = jax.jit(train)
     def wrapped(
             muzero_params: MuZeroParams,
             opt_state: optax.OptState,
