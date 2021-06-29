@@ -20,11 +20,13 @@ from replay_buffers.trajectory_replay_buffer import TrajectoryReplayBuffer, Repl
 def muzero_wrap_atari(env_id, eval=False):
     env = gym.make(env_id)
     env = atari_wrappers.NoopResetEnv(env, noop_max=30)
+    #env = atari_wrappers.MaxAndSkipEnv(env, skip=4)
     if not eval:
         env = atari_wrappers.EpisodicLifeEnv(env)
     if 'FIRE' in env.unwrapped.get_action_meanings():
         env = atari_wrappers.FireResetEnv(env)
-    env = atari_wrappers.WarpFrame(env, height=96, width=96, grayscale=False)
+    #env = atari_wrappers.WarpFrame(env, height=96, width=96, grayscale=False)
+    env = atari_wrappers.WarpFrame(env, height=96, width=96)
     return env
 
 
@@ -44,8 +46,9 @@ def main():
 
     config = {
         'gamma': 0.99,
-        'num_stack': 32,
-        'obs_shape': (96, 96, 3),
+        #'num_stack': 32,
+        'num_stack': 4,
+        'obs_shape': (96, 96, 1),
         'embedding_shape': (6, 6, 256),
         'num_simulations': 50,
         'model_rollout_length': 5,
@@ -60,7 +63,7 @@ def main():
         'cat_min': -300,
         'cat_max': 300,
         'learning_rate': 0.00025, # TODO this needs to be a schedule
-        'num_actors': 32,
+        'num_actors': 512,
         'num_training_steps': 1_000_000,
         'min_buffer_length': 1_000,
         'env_name': 'BreakoutNoFrameskip-v4',
